@@ -1,0 +1,12 @@
+[submodule "third_party/instant-ngp"]
+    path = third_party/instant-ngp
+    url = git@github.com:NVlabs/instant-ngp.git
+[submodule "third_party/torch-ngp"]
+    path = third_party/torch-ngp
+    url = git@github.com:ashawkey/torch-ngp.git
+[submodule "third_party/JNeRF"]
+	path = third_party/JNeRF
+	url = git@github.com:Jittor/JNeRF.git
+[submodule "third_party/HashNeRF-pytorch"]
+	path = third_party/HashNeRF-pytorch
+	url = git@github.com:yashbhalgat/HashNeRF-pytorch.git
