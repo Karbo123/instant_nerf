@@ -60,13 +60,6 @@ using Vector3i16 = Eigen::Matrix<uint16_t, 3, 1>;
 using Vector4i16 = Eigen::Matrix<uint16_t, 4, 1>;
 using Vector4i32 = Eigen::Matrix<uint32_t, 4, 1>;
 
-enum class EMeshRenderMode : int {
-	Off,
-	VertexColors,
-	VertexNormals,
-	FaceIDs,
-};
-
 enum class ERenderMode : int {
 	AO,
 	Shade,
@@ -109,13 +102,6 @@ enum class ENerfActivation : int {
 };
 static constexpr const char* NerfActivationStr = "None\0ReLU\0Logistic\0Exponential\0\0";
 
-enum class EMeshSdfMode : int {
-	Watertight,
-	Raystab,
-	PathEscape,
-};
-static constexpr const char* MeshSdfModeStr = "Watertight\0Raystab\0PathEscape\0\0";
-
 enum class EColorSpace : int {
 	Linear,
 	SRGB,
@@ -131,29 +117,8 @@ enum class ETonemapCurve : int {
 };
 static constexpr const char* TonemapCurveStr = "Identity\0ACES\0Hable\0Reinhard\0\0";
 
-enum class EDlssQuality : int {
-	UltraPerformance,
-	MaxPerformance,
-	Balanced,
-	MaxQuality,
-	UltraQuality,
-	NumDlssQualitySettings,
-	None,
-};
-static constexpr const char* DlssQualityStr = "UltraPerformance\0MaxPerformance\0Balanced\0MaxQuality\0UltraQuality\0Invalid\0None\0\0";
-static constexpr const char* DlssQualityStrArray[] = {"UltraPerformance", "MaxPerformance", "Balanced", "MaxQuality", "UltraQuality", "Invalid", "None"};
-
 enum class ETestbedMode : int {
 	Nerf,
-	Sdf,
-	Image,
-	Volume,
-};
-
-enum class ESDFGroundTruthMode : int {
-	RaytracedMesh,
-	SpheretracedMesh,
-	SDFBricks,
 };
 
 struct Ray {

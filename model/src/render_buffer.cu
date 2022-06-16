@@ -19,15 +19,6 @@
 
 #include <tiny-cuda-nn/gpu_memory.h>
 
-#ifdef NGP_GUI
-#  ifdef _WIN32
-#    include <GL/gl3w.h>
-#  else
-#    include <GL/glew.h>
-#  endif
-#  include <GLFW/glfw3.h>
-#endif
-
 #include <stb_image/stb_image.h>
 
 #include <cuda_gl_interop.h>
@@ -71,148 +62,6 @@ void CudaSurface2D::resize(const Vector2i& size) {
 	resource_desc.res.array.array = m_array;
 	CUDA_CHECK_THROW(cudaCreateSurfaceObject(&m_surface, &resource_desc));
 }
-
-#ifdef NGP_GUI
-GLTexture::~GLTexture() {
-	m_cuda_mapping.reset();
-	if (m_texture_id)
-		glDeleteTextures(1, &m_texture_id);
-}
-
-GLuint GLTexture::texture() {
-	if (!m_texture_id) {
-		glGenTextures(1, &m_texture_id);
-	}
-
-	return m_texture_id;
-}
-
-cudaSurfaceObject_t GLTexture::surface() {
-	if (!m_cuda_mapping) {
-		m_cuda_mapping = std::make_unique<CUDAMapping>(texture(), m_size);
-	}
-	return m_cuda_mapping->surface();
-}
-
-cudaArray_t GLTexture::array() {
-	if (!m_cuda_mapping) {
-		m_cuda_mapping = std::make_unique<CUDAMapping>(texture(), m_size);
-	}
-	return m_cuda_mapping->array();
-}
-
-void GLTexture::blit_from_cuda_mapping() {
-	if (!m_cuda_mapping || m_cuda_mapping->is_interop()) {
-		return;
-	}
-
-	if (m_internal_format != GL_RGBA32F || m_format != GL_RGBA || m_is_8bit) {
-		throw std::runtime_error{"Can only blit from CUDA mapping if the texture is RGBA float."};
-	}
-
-	const float* data_cpu = m_cuda_mapping->data_cpu();
-	glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA32F, m_size.x(), m_size.y(), 0, GL_RGBA, GL_FLOAT, data_cpu);
-}
-
-void GLTexture::load(const char* fname) {
-	uint8_t* out; // width * height * RGBA
-	int comp,width,height;
-	out = stbi_load(fname, &width, &height, &comp, 4);
-	if (!out) {
-		throw std::runtime_error{std::string{stbi_failure_reason()}};
-	}
-	ScopeGuard mem_guard{[&]() { stbi_image_free(out); }};
-	load(out, { width, height }, 4);
-}
-
-void GLTexture::load(const float* data, Vector2i new_size, int n_channels) {
-	resize(new_size, n_channels, false);
-
-	glBindTexture(GL_TEXTURE_2D, m_texture_id);
-	glTexImage2D(GL_TEXTURE_2D, 0, m_internal_format, new_size.x(), new_size.y(), 0, m_format, GL_FLOAT, data);
-}
-
-void GLTexture::load(const uint8_t* data, Vector2i new_size, int n_channels) {
-	resize(new_size, n_channels, true);
-
-	glBindTexture(GL_TEXTURE_2D, m_texture_id);
-	glTexImage2D(GL_TEXTURE_2D, 0, m_internal_format, new_size.x(), new_size.y(), 0, m_format, GL_UNSIGNED_BYTE, data);
-}
-
-void GLTexture::resize(const Vector2i& new_size, int n_channels, bool is_8bit) {
-	if (m_size == new_size && m_n_channels == n_channels && m_is_8bit == is_8bit) {
-		return;
-	}
-
-	if (m_texture_id) {
-		m_cuda_mapping.reset();
-		glDeleteTextures(1, &m_texture_id);
-		m_texture_id = 0;
-	}
-
-	glGenTextures(1, &m_texture_id);
-	glBindTexture(GL_TEXTURE_2D, m_texture_id);
-
-	switch (n_channels) {
-		case 1: m_internal_format = is_8bit ? GL_R8    : GL_R32F;    m_format = GL_RED;  break;
-		case 2: m_internal_format = is_8bit ? GL_RG8   : GL_RG32F;   m_format = GL_RG;   break;
-		case 3: m_internal_format = is_8bit ? GL_RGB8  : GL_RGB32F;  m_format = GL_RGB;  break;
-		case 4: m_internal_format = is_8bit ? GL_RGBA8 : GL_RGBA32F; m_format = GL_RGBA; break;
-		default: tlog::error() << "Unsupported number of channels: " << n_channels;
-	}
-	m_is_8bit = is_8bit;
-	m_size = new_size;
-	m_n_channels = n_channels;
-
-	glTexImage2D(GL_TEXTURE_2D, 0, m_internal_format, new_size.x(), new_size.y(), 0, m_format, is_8bit ? GL_UNSIGNED_BYTE : GL_FLOAT, nullptr);
-	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-}
-
-GLTexture::CUDAMapping::CUDAMapping(GLuint texture_id, const Vector2i& size) : m_size{size} {
-	static bool s_is_cuda_interop_supported = true;
-	if (s_is_cuda_interop_supported) {
-		cudaError_t err = cudaGraphicsGLRegisterImage(&m_graphics_resource, texture_id, GL_TEXTURE_2D, cudaGraphicsRegisterFlagsSurfaceLoadStore);
-		if (err != cudaSuccess) {
-			s_is_cuda_interop_supported = false;
-			cudaGetLastError(); // Reset error
-		}
-	}
-
-	if (!s_is_cuda_interop_supported) {
-		// falling back to a regular cuda surface + CPU copy of data
-		m_cuda_surface = std::make_unique<CudaSurface2D>();
-		m_cuda_surface->resize(size);
-		m_data_cpu.resize(m_size.prod() * 4);
-		return;
-	}
-
-	CUDA_CHECK_THROW(cudaGraphicsMapResources(1, &m_graphics_resource));
-	CUDA_CHECK_THROW(cudaGraphicsSubResourceGetMappedArray(&m_mapped_array, m_graphics_resource, 0, 0));
-
-	struct cudaResourceDesc resource_desc;
-	memset(&resource_desc, 0, sizeof(resource_desc));
-	resource_desc.resType = cudaResourceTypeArray;
-	resource_desc.res.array.array = m_mapped_array;
-
-	CUDA_CHECK_THROW(cudaCreateSurfaceObject(&m_surface, &resource_desc));
-}
-
-GLTexture::CUDAMapping::~CUDAMapping() {
-	if (m_surface) {
-		cudaDestroySurfaceObject(m_surface);
-		cudaGraphicsUnmapResources(1, &m_graphics_resource);
-		cudaGraphicsUnregisterResource(m_graphics_resource);
-	}
-}
-
-const float* GLTexture::CUDAMapping::data_cpu() {
-	CUDA_CHECK_THROW(cudaMemcpy2DFromArray(m_data_cpu.data(), m_size.x() * sizeof(float) * 4, array(), 0, 0, m_size.x() * sizeof(float) * 4, m_size.y(), cudaMemcpyDeviceToHost));
-	return m_data_cpu.data();
-}
-#endif //NGP_GUI
 
 __global__ void accumulate_kernel(Vector2i resolution, Array4f* frame_buffer, Array4f* accumulate_buffer, float sample_count, EColorSpace color_space) {
 	uint32_t x = threadIdx.x + blockDim.x * blockIdx.x;
@@ -500,30 +349,13 @@ __global__ void tonemap_kernel(Vector2i resolution, float exposure, Array4f back
 	surf2Dwrite(to_float4(color), surface, x * sizeof(float4), y);
 }
 
-__global__ void dlss_splat_kernel(
-	Vector2i resolution,
-	cudaSurfaceObject_t dlss_surface,
-	cudaSurfaceObject_t surface
-) {
-	uint32_t x = threadIdx.x + blockDim.x * blockIdx.x;
-	uint32_t y = threadIdx.y + blockDim.y * blockIdx.y;
-
-	if (x >= resolution.x() || y >= resolution.y()) {
-		return;
-	}
-
-	float4 color;
-	surf2Dread(&color, dlss_surface, x * sizeof(float4), y);
-	surf2Dwrite(color, surface, x * sizeof(float4), y);
-}
-
 void CudaRenderBuffer::resize(const Vector2i& res) {
 	m_in_resolution = res;
 	m_frame_buffer.enlarge(res.x() * res.y());
 	m_depth_buffer.enlarge(res.x() * res.y());
 	m_accumulate_buffer.enlarge(res.x() * res.y());
 
-	Vector2i out_res = m_dlss ? m_dlss->out_resolution() : res;
+	Vector2i out_res = res;
 	auto prev_out_res = out_resolution();
 	m_surface_provider->resize(out_res);
 
@@ -540,7 +372,7 @@ void CudaRenderBuffer::clear_frame(cudaStream_t stream) {
 void CudaRenderBuffer::accumulate(float exposure, cudaStream_t stream) {
 	Vector2i res = in_resolution();
 
-	uint32_t accum_spp = m_dlss ? 0 : m_spp;
+	uint32_t accum_spp = m_spp;
 
 	if (accum_spp == 0) {
 		CUDA_CHECK_THROW(cudaMemsetAsync(m_accumulate_buffer.data(), 0, m_accumulate_buffer.bytes(), stream));
@@ -560,9 +392,9 @@ void CudaRenderBuffer::accumulate(float exposure, cudaStream_t stream) {
 }
 
 void CudaRenderBuffer::tonemap(float exposure, const Array4f& background_color, EColorSpace output_color_space, cudaStream_t stream) {
-	assert(m_dlss || out_resolution() == in_resolution());
+	assert(out_resolution() == in_resolution());
 
-	auto res = m_dlss ? in_resolution() : out_resolution();
+	auto res = out_resolution();
 	const dim3 threads = { 16, 8, 1 };
 	const dim3 blocks = { div_round_up((uint32_t)res.x(), threads.x), div_round_up((uint32_t)res.y(), threads.y), 1 };
 	tonemap_kernel<<<blocks, threads, 0, stream>>>(
@@ -573,28 +405,9 @@ void CudaRenderBuffer::tonemap(float exposure, const Array4f& background_color, 
 		m_color_space,
 		output_color_space,
 		m_tonemap_curve,
-		m_dlss && output_color_space == EColorSpace::SRGB,
-		m_dlss ? m_dlss->frame() : surface()
+		false,
+		surface()
 	);
-
-	if (m_dlss) {
-		assert(out_resolution() == m_dlss->out_resolution());
-
-		assert(m_spp >= 1);
-		uint32_t sample_index = m_spp - 1;
-
-		m_dlss->run(
-			res,
-			output_color_space == EColorSpace::Linear, /* HDR mode */
-			m_dlss_sharpening,
-			Vector2f::Constant(0.5f) - ld_random_pixel_offset(sample_index), /* jitter offset in [-0.5, 0.5] */
-			sample_index == 0 /* reset history */
-		);
-
-		auto out_res = out_resolution();
-		const dim3 out_blocks = { div_round_up((uint32_t)out_res.x(), threads.x), div_round_up((uint32_t)out_res.y(), threads.y), 1 };
-		dlss_splat_kernel<<<out_blocks, threads, 0, stream>>>(out_res, m_dlss->output(), surface());
-	}
 }
 
 void CudaRenderBuffer::overlay_image(
@@ -647,21 +460,6 @@ void CudaRenderBuffer::overlay_false_color(Vector2i training_resolution, bool to
 		brightness,
 		viridis
 	);
-}
-
-void CudaRenderBuffer::enable_dlss(const Eigen::Vector2i& out_res) {
-#ifdef NGP_VULKAN
-	if (!m_dlss || m_dlss->out_resolution() != out_res) {
-		m_dlss = dlss_init(out_res);
-	}
-	resize(in_resolution());
-#else
-	throw std::runtime_error{"NGP was compiled without Vulkan/NGX/DLSS support."};
-#endif
-}
-
-void CudaRenderBuffer::disable_dlss() {
-	m_dlss = nullptr;
 }
 
 NGP_NAMESPACE_END

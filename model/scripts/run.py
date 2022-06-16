@@ -44,13 +44,12 @@ def parse_args():
 	parser.add_argument("--screenshot_dir", default="", help="Which directory to output screenshots to.")
 	parser.add_argument("--screenshot_spp", type=int, default=16, help="Number of samples per pixel in screenshots.")
 
-	parser.add_argument("--save_mesh", default="", help="Output a marching-cubes based mesh from the NeRF or SDF model. Supports OBJ and PLY format.")
+	parser.add_argument("--save_mesh", default="", help="Output a marching-cubes based mesh from the NeRF model. Supports OBJ and PLY format.")
 	parser.add_argument("--marching_cubes_res", default=256, type=int, help="Sets the resolution for the marching cubes grid.")
 
 	parser.add_argument("--width", "--screenshot_w", type=int, default=0, help="Resolution width of GUI and screenshots.")
 	parser.add_argument("--height", "--screenshot_h", type=int, default=0, help="Resolution height of GUI and screenshots.")
 
-	parser.add_argument("--gui", action="store_true", help="Run the testbed GUI interactively.")
 	parser.add_argument("--train", action="store_true", help="If the GUI is enabled, controls whether training starts immediately.")
 	parser.add_argument("--n_steps", type=int, default=-1, help="Number of steps to train for before quitting.")
 
@@ -76,22 +75,12 @@ if __name__ == "__main__":
 		else:
 			raise ValueError("Must specify either a valid '--mode' or '--scene' argument.")
 
-	if args.mode == "sdf":
-		mode = ngp.TestbedMode.Sdf
-		configs_dir = os.path.join(ROOT_DIR, "configs", "sdf")
-		scenes = scenes_sdf
-	elif args.mode == "volume":
-		mode = ngp.TestbedMode.Volume
-		configs_dir = os.path.join(ROOT_DIR, "configs", "volume")
-		scenes = scenes_volume
-	elif args.mode == "nerf":
+	if args.mode == "nerf":
 		mode = ngp.TestbedMode.Nerf
 		configs_dir = os.path.join(ROOT_DIR, "configs", "nerf")
 		scenes = scenes_nerf
-	elif args.mode == "image":
-		mode = ngp.TestbedMode.Image
-		configs_dir = os.path.join(ROOT_DIR, "configs", "image")
-		scenes = scenes_image
+	else:
+		raise RuntimeError(f"Unknown mode: {args.mode}")
 
 	base_network = os.path.join(configs_dir, "base.json")
 	if args.scene in scenes:
@@ -103,9 +92,6 @@ if __name__ == "__main__":
 
 	testbed = ngp.Testbed(mode)
 	testbed.nerf.sharpen = float(args.sharpen)
-
-	if mode == ngp.TestbedMode.Sdf:
-		testbed.tonemap_curve = ngp.TonemapCurve.ACES
 
 	if args.scene:
 		scene = args.scene
@@ -126,23 +112,12 @@ if __name__ == "__main__":
 		with open(args.screenshot_transforms) as f:
 			ref_transforms = json.load(f)
 
-	if args.gui:
-		# Pick a sensible GUI resolution depending on arguments.
-		sw = args.width or 1920
-		sh = args.height or 1080
-		while sw*sh > 1920*1080*4:
-			sw = int(sw / 2)
-			sh = int(sh / 2)
-		testbed.init_window(sw, sh)
-
-	testbed.shall_train = args.train if args.gui else True
+	testbed.shall_train = True
 
 
 	testbed.nerf.render_with_camera_distortion = True
 
 	network_stem = os.path.splitext(os.path.basename(network))[0]
-	if args.mode == "sdf":
-		setup_colored_sdf(testbed, args.scene)
 
 	if args.near_distance >= 0.0:
 		print("NeRF training ray near_distance ", args.near_distance)
@@ -184,10 +159,7 @@ if __name__ == "__main__":
 					repl(testbed)
 				# What will happen when training is done?
 				if testbed.training_step >= n_steps:
-					if args.gui:
-						testbed.shall_train = False
-					else:
-						break
+					break
 
 				# Update progress bar
 				if testbed.training_step < old_training_step or old_training_step == 0:
