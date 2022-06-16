@@ -246,9 +246,6 @@ public:
 		uint32_t n_pos;
 	};
 
-	NetworkDims network_dims_volume() const;
-	NetworkDims network_dims_sdf() const;
-	NetworkDims network_dims_image() const;
 	NetworkDims network_dims_nerf() const;
 
 	NetworkDims network_dims() const;
@@ -290,7 +287,6 @@ public:
 	void reset_network();
 	void create_empty_nerf_dataset(size_t n_images, int aabb_scale = 1, bool is_hdr = false);
 	void load_nerf();
-	void load_mesh();
 	void set_exposure(float exposure) { m_exposure = exposure; }
 	void set_max_level(float maxlevel);
 	void set_min_level(float minlevel);
@@ -352,12 +348,9 @@ public:
 	void override_sdf_training_data(pybind11::array_t<float> points, pybind11::array_t<float> distances);
 #endif
 
-	double calculate_iou(uint32_t n_samples=128*1024*1024, float scale_existing_results_factor=0.0, bool blocking=true, bool force_use_octree = true);
 	void draw_visualizations(ImDrawList* list, const Eigen::Matrix<float, 3, 4>& camera_matrix);
 	void train_and_render(bool skip_rendering);
 	filesystem::path training_data_path() const;
-	void init_window(int resw, int resh, bool hidden = false);
-	void destroy_window();
 	void apply_camera_smoothing(float elapsed_ms);
 	int find_best_training_view(int default_view);
 	bool begin_frame_and_handle_user_input();
@@ -365,7 +358,6 @@ public:
 	void draw_gui();
 	bool frame();
 	bool want_repl();
-	void load_image();
 	void load_exr_image();
 	void load_stbi_image();
 	void load_binary_image();
@@ -420,7 +412,6 @@ public:
 	MeshState m_mesh;
 	bool m_want_repl = false;
 
-	bool m_render_window = false;
 	bool m_gather_histograms = false;
 
 	bool m_include_optimizer_state_in_snapshot = false;
@@ -467,15 +458,6 @@ public:
 	EMeshRenderMode m_mesh_render_mode = EMeshRenderMode::VertexNormals;
 
 	uint32_t m_seed = 1337;
-
-#ifdef NGP_GUI
-
-	GLFWwindow* m_glfw_window = nullptr;
-
-	std::shared_ptr<GLTexture> m_pip_render_texture;
-	std::vector<std::shared_ptr<GLTexture>> m_render_textures;
-#endif
-
 
 	std::vector<CudaRenderBuffer> m_render_surfaces;
 	std::unique_ptr<CudaRenderBuffer> m_pip_render_surface;

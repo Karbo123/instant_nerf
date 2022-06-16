@@ -216,20 +216,9 @@ int main(int argc, char** argv) {
 			testbed.m_train = !no_train_flag;
 		}
 
-		bool gui = !no_gui_flag;
-#ifndef NGP_GUI
-		gui = false;
-#endif
-
-		if (gui) {
-			testbed.init_window(width_flag ? get(width_flag) : 1920, height_flag ? get(height_flag) : 1080);
-		}
-
 		// Render/training loop
 		while (testbed.frame()) {
-			if (!gui) {
-				tlog::info() << "iteration=" << testbed.m_training_step << " loss=" << testbed.m_loss_scalar.val();
-			}
+			tlog::info() << "iteration=" << testbed.m_training_step << " loss=" << testbed.m_loss_scalar.val();
 		}
 	} catch (const exception& e) {
 		tlog::error() << "Uncaught exception: " << e.what();

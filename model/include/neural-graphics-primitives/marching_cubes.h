@@ -50,20 +50,6 @@ void save_mesh(
 	Eigen::Vector3f nerf_offset
 );
 
-#ifdef NGP_GUI
-void draw_mesh_gl(
-	const tcnn::GPUMemory<Eigen::Vector3f>& verts,
-	const tcnn::GPUMemory<Eigen::Vector3f>& normals,
-	const tcnn::GPUMemory<Eigen::Vector3f>& cols,
-	const tcnn::GPUMemory<uint32_t>& indices,
-	const Eigen::Vector2i& resolution,
-	const Eigen::Vector2f& focal_length,
-	const Eigen::Matrix<float, 3, 4>& camera_matrix,
-	const Eigen::Vector2f& screen_center,
-	int mesh_render_mode
-);
-#endif
-
 void save_density_grid_to_png(const tcnn::GPUMemory<float>& density, const char* filename, Eigen::Vector3i res3d, float thresh, bool swap_y_z = true, float density_range = 4.f);
 
 void save_rgba_grid_to_png_sequence(const tcnn::GPUMemory<Eigen::Array4f>& rgba, const char *path, Eigen::Vector3i res3d, bool swap_y_z = true);
