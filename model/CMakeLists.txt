@@ -167,29 +167,6 @@ target_link_libraries(testbed PUBLIC ngp)
 target_compile_options(testbed PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:${CUDA_NVCC_FLAGS}>)
 target_compile_definitions(testbed PUBLIC ${NGP_DEFINITIONS} ${TCNN_DEFINITIONS})
 
-# Copy DLSS shared libraries
-if (NGP_VULKAN)
-	if (CMAKE_BUILD_TYPE STREQUAL "Debug")
-		set(NGX_BUILD_DIR "dev")
-	else()
-		set(NGX_BUILD_DIR "rel")
-	endif()
-
-	if (MSVC)
-		add_custom_command(TARGET testbed POST_BUILD
-			COMMAND ${CMAKE_COMMAND} -E copy "${CMAKE_CURRENT_SOURCE_DIR}/dependencies/dlss/lib/Windows_x86_64/${NGX_BUILD_DIR}/nvngx_dlss.dll" $<TARGET_FILE_DIR:testbed>
-			COMMAND_EXPAND_LISTS
-		)
-	else()
-		file(GLOB DLSS_SOS "${CMAKE_CURRENT_SOURCE_DIR}/dependencies/dlss/lib/Linux_x86_64/${NGX_BUILD_DIR}/libnvidia-ngx-dlss.so.*")
-		add_custom_command(TARGET testbed POST_BUILD
-			COMMAND ${CMAKE_COMMAND} -E copy ${DLSS_SOS} $<TARGET_FILE_DIR:testbed>
-			COMMAND_EXPAND_LISTS
-		)
-	endif()
-endif()
-
-
 if (Python_FOUND)
 	add_library(pyngp SHARED src/python_api.cu)
 	set_target_properties(pyngp PROPERTIES CXX_VISIBILITY_PRESET "hidden")
