@@ -50,7 +50,6 @@ def parse_args():
 	parser.add_argument("--width", "--screenshot_w", type=int, default=0, help="Resolution width of GUI and screenshots.")
 	parser.add_argument("--height", "--screenshot_h", type=int, default=0, help="Resolution height of GUI and screenshots.")
 
-	parser.add_argument("--gui", action="store_true", help="Run the testbed GUI interactively.")
 	parser.add_argument("--train", action="store_true", help="If the GUI is enabled, controls whether training starts immediately.")
 	parser.add_argument("--n_steps", type=int, default=-1, help="Number of steps to train for before quitting.")
 
@@ -126,16 +125,7 @@ if __name__ == "__main__":
 		with open(args.screenshot_transforms) as f:
 			ref_transforms = json.load(f)
 
-	if args.gui:
-		# Pick a sensible GUI resolution depending on arguments.
-		sw = args.width or 1920
-		sh = args.height or 1080
-		while sw*sh > 1920*1080*4:
-			sw = int(sw / 2)
-			sh = int(sh / 2)
-		testbed.init_window(sw, sh)
-
-	testbed.shall_train = args.train if args.gui else True
+	testbed.shall_train = True
 
 
 	testbed.nerf.render_with_camera_distortion = True
@@ -184,10 +174,7 @@ if __name__ == "__main__":
 					repl(testbed)
 				# What will happen when training is done?
 				if testbed.training_step >= n_steps:
-					if args.gui:
-						testbed.shall_train = False
-					else:
-						break
+					break
 
 				# Update progress bar
 				if testbed.training_step < old_training_step or old_training_step == 0:
