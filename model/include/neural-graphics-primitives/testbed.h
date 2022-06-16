@@ -374,8 +374,6 @@ public:
 	void update_loss_graph();
 	void load_camera_path(const std::string& filepath_string);
 
-	float compute_image_mse(bool quantize_to_byte);
-
 	void compute_and_save_marching_cubes_mesh(const char* filename, Eigen::Vector3i res3d = Eigen::Vector3i::Constant(128), BoundingBox aabb = {}, float thresh = 2.5f, bool unwrap_it = false);
 	Eigen::Vector3i compute_and_save_png_slices(const char* filename, int res, BoundingBox aabb = {}, float thresh = 2.5f, float density_range = 4.f, bool flip_y_and_z_axes = false);
 
