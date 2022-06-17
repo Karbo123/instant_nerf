@@ -2208,9 +2208,8 @@ void Testbed::render_nerf(CudaRenderBuffer& render_buffer, const Vector2i& max_r
 		m_nerf.tracer.clear();
 	}};
 
-	// Our motion vector code can't undo f-theta and grid distortions -- so don't render these if DLSS is enabled.
-	bool render_opencv_camera_distortion = m_nerf.render_with_camera_distortion && (!render_buffer.dlss() || m_nerf.render_distortion.mode == ECameraDistortionMode::Iterative);
-	bool render_grid_camera_distortion = m_nerf.render_with_camera_distortion && !render_buffer.dlss();
+	bool render_opencv_camera_distortion = m_nerf.render_with_camera_distortion;
+	bool render_grid_camera_distortion = m_nerf.render_with_camera_distortion;
 
 	CameraDistortion camera_distortion = render_opencv_camera_distortion ? m_nerf.render_distortion : CameraDistortion{};
 

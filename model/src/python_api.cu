@@ -55,38 +55,6 @@ void Testbed::Nerf::Training::set_image(int frame_idx, pybind11::array_t<float> 
 	dataset.set_training_image(frame_idx, {img_buf.shape[1], img_buf.shape[0]}, (const void*)img_buf.ptr, (const float*)depth_buf.ptr, depth_scale, false, EImageDataType::Float, EDepthDataType::Float);
 }
 
-void Testbed::override_sdf_training_data(py::array_t<float> points, py::array_t<float> distances) {
-	py::buffer_info points_buf = points.request();
-	py::buffer_info distances_buf = distances.request();
-
-	if (points_buf.ndim != 2 || distances_buf.ndim != 1 || points_buf.shape[0] != distances_buf.shape[0] || points_buf.shape[1] != 3) {
-		tlog::error() << "Invalid Points<->Distances data";
-		return;
-	}
-
-	std::vector<Vector3f> points_cpu(points_buf.shape[0]);
-	std::vector<float> distances_cpu(distances_buf.shape[0]);
-
-	for (size_t i = 0; i < points_cpu.size(); ++i) {
-		Vector3f pos = *((Vector3f*)points_buf.ptr + i);
-		float dist = *((float*)distances_buf.ptr + i);
-
-		pos = (pos - m_raw_aabb.min) / m_sdf.mesh_scale + 0.5f * (Vector3f::Ones() - (m_raw_aabb.max - m_raw_aabb.min) / m_sdf.mesh_scale);
-		dist /= m_sdf.mesh_scale;
-
-		points_cpu[i] = pos;
-		distances_cpu[i] = dist;
-	}
-
-	CUDA_CHECK_THROW(cudaMemcpyAsync(m_sdf.training.positions.data(), points_cpu.data(), points_buf.shape[0] * points_buf.shape[1] * sizeof(float), cudaMemcpyHostToDevice, m_training_stream));
-	CUDA_CHECK_THROW(cudaMemcpyAsync(m_sdf.training.distances.data(), distances_cpu.data(), distances_buf.shape[0] * sizeof(float), cudaMemcpyHostToDevice, m_training_stream));
-	CUDA_CHECK_THROW(cudaStreamSynchronize(m_training_stream));
-	m_sdf.training.size = points_buf.shape[0];
-	m_sdf.training.idx = 0;
-	m_sdf.training.max_size = m_sdf.training.size;
-	m_sdf.training.generate_sdf_data_online = false;
-}
-
 pybind11::dict Testbed::compute_marching_cubes_mesh(Eigen::Vector3i res3d, BoundingBox aabb, float thresh) {
 	if (aabb.is_empty()) {
 		aabb = m_testbed_mode == ETestbedMode::Nerf ? m_render_aabb : m_aabb;
@@ -185,9 +153,6 @@ PYBIND11_MODULE(pyngp, m) {
 
 	py::enum_<ETestbedMode>(m, "TestbedMode")
 		.value("Nerf", ETestbedMode::Nerf)
-		.value("Sdf", ETestbedMode::Sdf)
-		.value("Image", ETestbedMode::Image)
-		.value("Volume", ETestbedMode::Volume)
 		.export_values();
 
 	py::enum_<ERenderMode>(m, "RenderMode")
@@ -221,23 +186,11 @@ PYBIND11_MODULE(pyngp, m) {
 		.value("RelativeL2", ELossType::RelativeL2)
 		.export_values();
 
-	py::enum_<ESDFGroundTruthMode>(m, "SDFGroundTruthMode")
-		.value("RaytracedMesh", ESDFGroundTruthMode::RaytracedMesh)
-		.value("SpheretracedMesh", ESDFGroundTruthMode::SpheretracedMesh)
-		.value("SDFBricks", ESDFGroundTruthMode::SDFBricks)
-		.export_values();
-
 	py::enum_<ENerfActivation>(m, "NerfActivation")
 		.value("None", ENerfActivation::None)
 		.value("ReLU", ENerfActivation::ReLU)
 		.value("Logistic", ENerfActivation::Logistic)
 		.value("Exponential", ENerfActivation::Exponential)
-		.export_values();
-
-	py::enum_<EMeshSdfMode>(m, "MeshSdfMode")
-		.value("Watertight", EMeshSdfMode::Watertight)
-		.value("Raystab", EMeshSdfMode::Raystab)
-		.value("PathEscape", EMeshSdfMode::PathEscape)
 		.export_values();
 
 	py::enum_<EColorSpace>(m, "ColorSpace")
@@ -315,7 +268,6 @@ PYBIND11_MODULE(pyngp, m) {
 		.def("reset_accumulation", &Testbed::reset_accumulation, "Reset rendering accumulation.")
 		.def("reload_network_from_file", &Testbed::reload_network_from_file, py::arg("path")="", "Reload the network from a config file.")
 		.def("reload_network_from_json", &Testbed::reload_network_from_json, "Reload the network from a json object.")
-		.def("override_sdf_training_data", &Testbed::override_sdf_training_data, "Override the training data for learning a signed distance function")
 		.def("n_params", &Testbed::n_params, "Number of trainable parameters")
 		.def("n_encoding_params", &Testbed::n_encoding_params, "Number of trainable parameters in the encoding")
 		.def("save_snapshot", &Testbed::save_snapshot, py::arg("path"), py::arg("include_optimizer_state")=false, "Save a snapshot of the currently trained model")
@@ -328,7 +280,7 @@ PYBIND11_MODULE(pyngp, m) {
 			py::arg("thresh") = std::numeric_limits<float>::max(),
 			py::arg("density_range") = 4.f,
 			py::arg("flip_y_and_z_axes") = false,
-			"Compute & save a PNG file representing the 3D density or distance field from the current SDF or NeRF model. "
+			"Compute & save a PNG file representing the 3D density or distance field from the current NeRF model. "
 		)
 		.def("compute_and_save_marching_cubes_mesh", &Testbed::compute_and_save_marching_cubes_mesh,
 			py::arg("filename"),
@@ -336,18 +288,18 @@ PYBIND11_MODULE(pyngp, m) {
 			py::arg("aabb") = BoundingBox{},
 			py::arg("thresh") = std::numeric_limits<float>::max(),
 			py::arg("generate_uvs_for_obj_file") = false,
-			"Compute & save a marching cubes mesh from the current SDF or NeRF model. "
+			"Compute & save a marching cubes mesh from the current NeRF model. "
 			"Supports OBJ and PLY format. Note that UVs are only supported by OBJ files. "
-			"`thresh` is the density threshold; use 0 for SDF; 2.5 works well for NeRF. "
+			"`thresh` is the density threshold; 2.5 works well for NeRF. "
 			"If the aabb parameter specifies an inside-out (\"empty\") box (default), the current render_aabb bounding box is used."
 		)
 		.def("compute_marching_cubes_mesh", &Testbed::compute_marching_cubes_mesh,
 			py::arg("resolution") = Eigen::Vector3i::Constant(256),
 			py::arg("aabb") = BoundingBox{},
 			py::arg("thresh") = std::numeric_limits<float>::max(),
-			"Compute a marching cubes mesh from the current SDF or NeRF model. "
+			"Compute a marching cubes mesh from the current NeRF model. "
 			"Returns a python dict with numpy arrays V (vertices), N (vertex normals), C (vertex colors), and F (triangular faces). "
-			"`thresh` is the density threshold; use 0 for SDF; 2.5 works well for NeRF. "
+			"`thresh` is the density threshold; 2.5 works well for NeRF. "
 			"If the aabb parameter specifies an inside-out (\"empty\") box (default), the current render_aabb bounding box is used."
 		)
 		;
@@ -391,8 +343,6 @@ PYBIND11_MODULE(pyngp, m) {
 		.def_property_readonly("loss", [](py::object& obj) { return obj.cast<Testbed&>().m_loss_scalar.val(); })
 		.def_readonly("training_step", &Testbed::m_training_step)
 		.def_readonly("nerf", &Testbed::m_nerf)
-		.def_readonly("sdf", &Testbed::m_sdf)
-		.def_readonly("image", &Testbed::m_image)
 		.def_readwrite("camera_smoothing", &Testbed::m_camera_smoothing)
 		.def_readwrite("display_gui", &Testbed::m_imgui_enabled)
 		.def_readwrite("visualize_unit_cube", &Testbed::m_visualize_unit_cube)
@@ -422,19 +372,6 @@ PYBIND11_MODULE(pyngp, m) {
 		.def_readwrite("rendering_min_transmittance", &Testbed::Nerf::rendering_min_transmittance)
 		.def_readwrite("cone_angle_constant", &Testbed::Nerf::cone_angle_constant)
 		.def_readwrite("visualize_cameras", &Testbed::Nerf::visualize_cameras)
-		;
-
-	py::class_<BRDFParams> brdfparams(m, "BRDFParams");
-	brdfparams
-		.def_readwrite("metallic", &BRDFParams::metallic)
-		.def_readwrite("subsurface", &BRDFParams::subsurface)
-		.def_readwrite("specular", &BRDFParams::specular)
-		.def_readwrite("roughness", &BRDFParams::roughness)
-		.def_readwrite("sheen", &BRDFParams::sheen)
-		.def_readwrite("clearcoat", &BRDFParams::clearcoat)
-		.def_readwrite("clearcoat_gloss", &BRDFParams::clearcoat_gloss)
-		.def_readwrite("basecolor", &BRDFParams::basecolor)
-		.def_readwrite("ambientcolor", &BRDFParams::ambientcolor)
 		;
 
 	py::class_<TrainingImageMetadata> metadata(m, "TrainingImageMetadata");
@@ -506,18 +443,6 @@ PYBIND11_MODULE(pyngp, m) {
 			py::arg("depth_scale")=1.0f,
 			"set one of the training images. must be a floating point numpy array of (H,W,C) with 4 channels; linear color space; W and H must match image size of the rest of the dataset"
 		)
-		;
-
-	py::class_<Testbed::Image> image(testbed, "Image");
-	image
-		.def_readonly("training", &Testbed::Image::training)
-		.def_readwrite("random_mode", &Testbed::Image::random_mode)
-		.def_readwrite("pos", &Testbed::Image::pos)
-		;
-
-	py::class_<Testbed::Image::Training>(image, "Training")
-		.def_readwrite("snap_to_pixel_centers", &Testbed::Image::Training::snap_to_pixel_centers)
-		.def_readwrite("linear_colors", &Testbed::Image::Training::linear_colors)
 		;
 }
 

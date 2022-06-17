@@ -7,7 +7,7 @@ This repository tries to exactly reproduce the performance of instant-ngp in ter
 # What's Changed Compared to the Official Implementation?
 
 TODO
-- [ ] remove `GUI`
+- [x] remove `GUI`
 - [ ] only support `Blender` dataset loading
 
 # Installation

@@ -32,24 +32,7 @@ if (NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
 	set_property(CACHE CMAKE_BUILD_TYPE PROPERTY STRINGS "Debug" "Release" "RelWithDebInfo")
 endif()
 
-if (NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/dependencies/glfw/CMakeLists.txt")
-	message(FATAL_ERROR
-		"Some instant-ngp dependencies are missing. "
-		"If you forgot the \"--recursive\" flag when cloning this project, "
-		"this can be fixed by calling \"git submodule update --init --recursive\"."
-	)
-endif()
-
-if (APPLE)
-	set(CMAKE_MACOSX_RPATH ON)
-endif()
-
-if (MSVC)
-	set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /D_CRT_SECURE_NO_WARNINGS")
-	set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /MP24")
-else()
-	set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fPIC")
-endif()
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fPIC")
 
 set(CMAKE_CXX_STANDARD 14)
 set(CMAKE_CXX_EXTENSIONS OFF)
@@ -63,14 +46,10 @@ set(CMAKE_CUDA_STANDARD_REQUIRED ON)
 set(CMAKE_CUDA_EXTENSIONS OFF)
 set(CUDA_LINK_LIBRARIES_KEYWORD PUBLIC)
 
-if (MSVC)
-	list(APPEND CUDA_NVCC_FLAGS "-Xcompiler=-bigobj")
-else()
-	list(APPEND CUDA_NVCC_FLAGS "-Xcompiler=-mf16c")
-	list(APPEND CUDA_NVCC_FLAGS "-Xcompiler=-Wno-float-conversion")
-	list(APPEND CUDA_NVCC_FLAGS "-Xcompiler=-fno-strict-aliasing")
-	list(APPEND CUDA_NVCC_FLAGS "-Xcompiler=-fPIC")
-endif()
+list(APPEND CUDA_NVCC_FLAGS "-Xcompiler=-mf16c")
+list(APPEND CUDA_NVCC_FLAGS "-Xcompiler=-Wno-float-conversion")
+list(APPEND CUDA_NVCC_FLAGS "-Xcompiler=-fno-strict-aliasing")
+list(APPEND CUDA_NVCC_FLAGS "-Xcompiler=-fPIC")
 list(APPEND CUDA_NVCC_FLAGS "--extended-lambda")
 list(APPEND CUDA_NVCC_FLAGS "--expt-relaxed-constexpr")
 
@@ -86,7 +65,6 @@ set(TCNN_BUILD_EXAMPLES OFF)
 add_subdirectory(dependencies/tiny-cuda-nn)
 include_directories("dependencies/tiny-cuda-nn/include")
 include_directories("dependencies/tiny-cuda-nn/dependencies")
-
 include_directories("dependencies")
 
 #########
@@ -94,11 +72,6 @@ include_directories("dependencies")
 #########
 include_directories("dependencies/eigen")
 include_directories("dependencies/filesystem")
-
-###########
-# nanovdb #
-###########
-include_directories("dependencies/nanovdb")
 
 ##########
 # OpenMP #
@@ -143,7 +116,6 @@ set(SOURCES
 	src/thread_pool.cpp
 	src/tinyexr_wrapper.cu
 	src/tinyobj_loader_wrapper.cpp
-	src/triangle_bvh.cu
 )
 
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
@@ -175,15 +147,4 @@ if (Python_FOUND)
 	target_compile_options(pyngp PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:${CUDA_NVCC_FLAGS}>)
 	target_compile_definitions(pyngp PUBLIC -DNGP_PYTHON ${NGP_DEFINITIONS} ${TCNN_DEFINITIONS})
 	pybind11_extension(pyngp)
-
-	if (MSVC)
-		# Copy dlls needed at runtime
-		file(GLOB CUBLAS_DLLS "${CUDA_COMPILER_BIN}/cublas*.dll")
-		if (CUBLAS_DLLS)
-			add_custom_command(TARGET pyngp POST_BUILD
-				COMMAND ${CMAKE_COMMAND} -E copy ${CUBLAS_DLLS} $<TARGET_FILE_DIR:pyngp>
-				COMMAND_EXPAND_LISTS
-			)
-		endif()
-	endif()
 endif()

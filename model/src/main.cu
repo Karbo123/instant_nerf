@@ -43,7 +43,7 @@ int main(int argc, char** argv) {
 	ValueFlag<string> mode_flag{
 		parser,
 		"MODE",
-		"Mode can be 'nerf', 'sdf', or 'image' or 'volume'. Inferred from the scene if unspecified.",
+		"Mode can be 'nerf'. Inferred from the scene if unspecified.",
 		{'m', "mode"},
 	};
 
@@ -71,7 +71,7 @@ int main(int argc, char** argv) {
 	ValueFlag<string> scene_flag{
 		parser,
 		"SCENE",
-		"The scene to load. Can be NeRF dataset, a *.obj mesh for training a SDF, an image, or a *.nvdb volume.",
+		"The scene to load. Can be NeRF dataset.",
 		{'s', "scene"},
 	};
 
@@ -141,25 +141,15 @@ int main(int argc, char** argv) {
 
 			if (scene_path.is_directory() || equals_case_insensitive(scene_path.extension(), "json")) {
 				mode = ETestbedMode::Nerf;
-			} else if (equals_case_insensitive(scene_path.extension(), "obj") || equals_case_insensitive(scene_path.extension(), "stl")) {
-				mode = ETestbedMode::Sdf;
-			} else if (equals_case_insensitive(scene_path.extension(), "nvdb")) {
-				mode = ETestbedMode::Volume;
 			} else {
-				mode = ETestbedMode::Image;
+				tlog::error() << "Unknown scene path" << scene_path;
 			}
 		} else {
 			auto mode_str = get(mode_flag);
 			if (equals_case_insensitive(mode_str, "nerf")) {
 				mode = ETestbedMode::Nerf;
-			} else if (equals_case_insensitive(mode_str, "sdf")) {
-				mode = ETestbedMode::Sdf;
-			} else if (equals_case_insensitive(mode_str, "image")) {
-				mode = ETestbedMode::Image;
-			} else if (equals_case_insensitive(mode_str, "volume")) {
-				mode = ETestbedMode::Volume;
 			} else {
-				tlog::error() << "Mode must be one of 'nerf', 'sdf', 'image', and 'volume'.";
+				tlog::error() << "Mode must be 'nerf'.";
 				return 1;
 			}
 		}
@@ -175,13 +165,7 @@ int main(int argc, char** argv) {
 			testbed.load_training_data(scene_path.str());
 		}
 
-		std::string mode_str;
-		switch (mode) {
-			case ETestbedMode::Nerf:   mode_str = "nerf";   break;
-			case ETestbedMode::Sdf:    mode_str = "sdf";    break;
-			case ETestbedMode::Image:  mode_str = "image";  break;
-			case ETestbedMode::Volume: mode_str = "volume"; break;
-		}
+		std::string mode_str = "nerf";
 
 		if (snapshot_flag) {
 			// Load network from a snapshot if one is provided

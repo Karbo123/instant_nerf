@@ -19,12 +19,9 @@
 #include <neural-graphics-primitives/nerf_loader.h>
 #include <neural-graphics-primitives/nerf_network.h>
 #include <neural-graphics-primitives/render_buffer.h>
-#include <neural-graphics-primitives/takikawa_encoding.cuh>
 #include <neural-graphics-primitives/testbed.h>
 #include <neural-graphics-primitives/tinyexr_wrapper.h>
 #include <neural-graphics-primitives/trainable_buffer.cuh>
-#include <neural-graphics-primitives/triangle_bvh.cuh>
-#include <neural-graphics-primitives/triangle_octree.cuh>
 
 #include <tiny-cuda-nn/encodings/grid.h>
 #include <tiny-cuda-nn/loss.h>
@@ -154,11 +151,9 @@ void Testbed::reset_accumulation(bool due_to_camera_movement, bool immediate_red
 		redraw_next_frame();
 	}
 
-	if (!due_to_camera_movement || !reprojection_available()) {
-		m_windowless_render_surface.reset_accumulation();
-		for (auto& tex : m_render_surfaces) {
-			tex.reset_accumulation();
-		}
+	m_windowless_render_surface.reset_accumulation();
+	for (auto& tex : m_render_surfaces) {
+		tex.reset_accumulation();
 	}
 }
 
@@ -213,7 +208,7 @@ void Testbed::reset_camera() {
 	set_fov(50.625f);
 	m_zoom = 1.f;
 	m_screen_center = Vector2f::Constant(0.5f);
-	m_scale = m_testbed_mode == ETestbedMode::Image ? 1.0f : 1.5f;
+	m_scale = 1.5f;
 	m_camera <<
 		1.0f, 0.0f, 0.0f, 0.5f,
 		0.0f, -1.0f, 0.0f, 0.5f,
@@ -260,14 +255,7 @@ Eigen::Vector3i Testbed::compute_and_save_png_slices(const char* filename, int r
 		thresh = m_mesh.thresh;
 	}
 	float range = density_range;
-	if (m_testbed_mode == ETestbedMode::Sdf) {
-		auto res3d = get_marching_cubes_res(res, aabb);
-		aabb.inflate(range * aabb.diag().x()/res3d.x());
-	}
 	auto res3d = get_marching_cubes_res(res, aabb);
-	if (m_testbed_mode == ETestbedMode::Sdf)
-		range *= -aabb.diag().x()/res3d.x(); // rescale the range to be in output voxels. ie this scale factor is mapped back to the original world space distances.
-			// negated so that black = outside, white = inside
 	char fname[128];
 	snprintf(fname, sizeof(fname), ".density_slices_%dx%dx%d.png", res3d.x(), res3d.y(), res3d.z());
 	GPUMemory<float> density = get_density_on_grid(res3d, aabb);
@@ -481,7 +469,6 @@ Testbed::NetworkDims Testbed::network_dims() const {
 }
 
 void Testbed::reset_network() {
-	m_sdf.iou_decay = 0;
 
 	m_rng = default_rng_t{m_seed};
 
@@ -544,11 +531,6 @@ void Testbed::reset_network() {
 		}
 
 		float desired_resolution = 2048.0f; // Desired resolution of the finest hashgrid level over the unit cube
-		if (m_testbed_mode == ETestbedMode::Image) {
-			desired_resolution = m_image.resolution.maxCoeff() / 2.0f;
-		} else if (m_testbed_mode == ETestbedMode::Volume) {
-			desired_resolution = m_volume.world2index_scale;
-		}
 
 		// Automatically determine suitable per_level_scale
 		m_per_level_scale = encoding_config.value("per_level_scale", 0.0f);
@@ -628,47 +610,6 @@ void Testbed::reset_network() {
 			m_distortion.optimizer.reset(create_optimizer<float>(distortion_map_optimizer_config));
 			m_distortion.trainer = std::make_shared<Trainer<float, float>>(m_distortion.map, m_distortion.optimizer, std::shared_ptr<Loss<float>>{create_loss<float>(loss_config)}, m_seed);
 		}
-	} else {
-		uint32_t alignment = network_config.contains("otype") && (equals_case_insensitive(network_config["otype"], "FullyFusedMLP") || equals_case_insensitive(network_config["otype"], "MegakernelMLP")) ? 16u : 8u;
-
-		if (encoding_config.contains("otype") && equals_case_insensitive(encoding_config["otype"], "Takikawa")) {
-			if (m_sdf.octree_depth_target == 0) {
-				m_sdf.octree_depth_target = encoding_config["n_levels"];
-			}
-
-			if (!m_sdf.triangle_octree || m_sdf.triangle_octree->depth() != m_sdf.octree_depth_target) {
-				m_sdf.triangle_octree.reset(new TriangleOctree{});
-				m_sdf.triangle_octree->build(*m_sdf.triangle_bvh, m_sdf.triangles_cpu, m_sdf.octree_depth_target);
-				m_sdf.octree_depth_target = m_sdf.triangle_octree->depth();
-				m_sdf.brick_data.free_memory();
-			}
-
-			m_encoding.reset(new TakikawaEncoding<precision_t>(
-				encoding_config["starting_level"],
-				m_sdf.triangle_octree,
-				tcnn::string_to_interpolation_type(encoding_config.value("interpolation", "linear"))
-			));
-
-			m_network = std::make_shared<NetworkWithInputEncoding<precision_t>>(m_encoding, dims.n_output, network_config);
-			m_sdf.uses_takikawa_encoding = true;
-		} else {
-			m_encoding.reset(create_encoding<precision_t>(dims.n_input, encoding_config));
-			m_network = std::make_shared<NetworkWithInputEncoding<precision_t>>(m_encoding, dims.n_output, network_config);
-			m_sdf.uses_takikawa_encoding = false;
-			if (m_sdf.octree_depth_target == 0 && encoding_config.contains("n_levels")) {
-				m_sdf.octree_depth_target = encoding_config["n_levels"];
-			}
-		}
-
-		n_encoding_params = m_encoding->n_params();
-
-		tlog::info()
-			<< "Model:         " << dims.n_input
-			<< "--[" << std::string(encoding_config["otype"])
-			<< "]-->" << m_encoding->padded_output_width()
-			<< "--[" << std::string(network_config["otype"])
-			<< "(neurons=" << (int)network_config["n_neurons"] << ",layers=" << ((int)network_config["n_hidden_layers"]+2) << ")"
-			<< "]-->" << dims.n_output;
 	}
 
 	size_t n_network_params = m_network->n_params() - n_encoding_params;
@@ -756,10 +697,8 @@ void Testbed::train(uint32_t batch_size) {
 		return;
 	}
 
-	if (!m_dlss) {
-		// No immediate redraw necessary
-		reset_accumulation(false, false);
-	}
+	// No immediate redraw necessary
+	reset_accumulation(false, false);
 
 	uint32_t n_prep_to_skip = m_testbed_mode == ETestbedMode::Nerf ? tcnn::clamp(m_training_step / 16u, 1u, 16u) : 1u;
 	if (m_training_step % n_prep_to_skip == 0) {
@@ -816,78 +755,6 @@ Vector2f Testbed::render_screen_center() const {
 	return {(0.5f-screen_center.x())*m_zoom + 0.5f, (0.5-screen_center.y())*m_zoom + 0.5f};
 }
 
-__global__ void dlss_prep_kernel(
-	ETestbedMode mode,
-	Vector2i resolution,
-	uint32_t sample_index,
-	Vector2f focal_length,
-	Vector2f screen_center,
-	Vector3f parallax_shift,
-	bool snap_to_pixel_centers,
-	float* depth_buffer,
-	Matrix<float, 3, 4> camera,
-	Matrix<float, 3, 4> prev_camera,
-	cudaSurfaceObject_t depth_surface,
-	cudaSurfaceObject_t mvec_surface,
-	cudaSurfaceObject_t exposure_surface,
-	CameraDistortion camera_distortion,
-	const float view_dist,
-	const float prev_view_dist,
-	const Vector2f image_pos,
-	const Vector2f prev_image_pos,
-	const Vector2i image_resolution
-) {
-	uint32_t x = threadIdx.x + blockDim.x * blockIdx.x;
-	uint32_t y = threadIdx.y + blockDim.y * blockIdx.y;
-
-	if (x >= resolution.x() || y >= resolution.y()) {
-		return;
-	}
-
-	uint32_t idx = x + resolution.x() * y;
-
-	uint32_t x_orig = x;
-	uint32_t y_orig = y;
-
-
-	const float depth = depth_buffer[idx];
-	Vector2f mvec = mode == ETestbedMode::Image ? motion_vector_2d(
-		sample_index,
-		{x, y},
-		resolution,
-		image_resolution,
-		screen_center,
-		view_dist,
-		prev_view_dist,
-		image_pos,
-		prev_image_pos,
-		snap_to_pixel_centers
-	) : motion_vector_3d(
-		sample_index,
-		{x, y},
-		resolution,
-		focal_length,
-		camera,
-		prev_camera,
-		screen_center,
-		parallax_shift,
-		snap_to_pixel_centers,
-		depth,
-		camera_distortion
-	);
-
-	surf2Dwrite(make_float2(mvec.x(), mvec.y()), mvec_surface, x_orig * sizeof(float2), y_orig);
-
-	// Scale depth buffer to be guaranteed in [0,1].
-	surf2Dwrite(std::min(std::max(depth / 128.0f, 0.0f), 1.0f), depth_surface, x_orig * sizeof(float), y_orig);
-
-	// First thread write an exposure factor of 1. Since DLSS will run on tonemapped data,
-	// exposure is assumed to already have been applied to DLSS' inputs.
-	if (x_orig == 0 && y_orig == 0) {
-		surf2Dwrite(1.0f, exposure_surface, 0, 0);
-	}
-}
-
 void Testbed::render_frame(const Matrix<float, 3, 4>& camera_matrix0, const Matrix<float, 3, 4>& camera_matrix1, const Vector4f& nerf_rolling_shutter, CudaRenderBuffer& render_buffer, bool to_srgb) {
 	Vector2i max_res = m_window_res.cwiseMax(render_buffer.in_resolution());
 
@@ -909,48 +776,8 @@ void Testbed::render_frame(const Matrix<float, 3, 4>& camera_matrix0, const Matr
 	render_buffer.set_color_space(m_color_space);
 	render_buffer.set_tonemap_curve(m_tonemap_curve);
 
-	// Prepare DLSS data: motion vectors, scaled depth, exposure
-	if (render_buffer.dlss()) {
-		auto res = render_buffer.in_resolution();
-
-		bool distortion = m_testbed_mode == ETestbedMode::Nerf && m_nerf.render_with_camera_distortion;
-
-		const dim3 threads = { 16, 8, 1 };
-		const dim3 blocks = { div_round_up((uint32_t)res.x(), threads.x), div_round_up((uint32_t)res.y(), threads.y), 1 };
-
-		Vector3f parallax_shift = get_scaled_parallax_shift();
-		if (parallax_shift.head<2>() != Vector2f::Zero()) {
-			throw std::runtime_error{"Motion vectors don't support parallax shift."};
-		}
-
-		dlss_prep_kernel<<<blocks, threads, 0, m_inference_stream>>>(
-			m_testbed_mode,
-			res,
-			render_buffer.spp(),
-			focal_length,
-			screen_center,
-			parallax_shift,
-			m_snap_to_pixel_centers,
-			render_buffer.depth_buffer(),
-			camera_matrix0,
-			m_prev_camera,
-			render_buffer.dlss()->depth(),
-			render_buffer.dlss()->mvec(),
-			render_buffer.dlss()->exposure(),
-			distortion ? m_nerf.render_distortion : CameraDistortion{},
-			m_scale,
-			m_prev_scale,
-			m_image.pos,
-			m_image.prev_pos,
-			m_image.resolution
-		);
-
-		render_buffer.set_dlss_sharpening(m_dlss_sharpening);
-	}
-
 	m_prev_camera = camera_matrix0;
 	m_prev_scale = m_scale;
-	m_image.prev_pos = m_image.pos;
 
 	render_buffer.accumulate(m_exposure, m_inference_stream);
 	render_buffer.tonemap(m_exposure, m_background_color, to_srgb ? EColorSpace::SRGB : EColorSpace::Linear, m_inference_stream);

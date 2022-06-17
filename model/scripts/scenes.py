@@ -77,7 +77,7 @@ scenes_nerf = {
 
 def ours_mesh(name, up = [0,1,0], infolder=True):
 	return {
-		"data_dir"      : os.path.join(SDF_DATA_FOLDER, f"{name}") if infolder else SDF_DATA_FOLDER,
+		"data_dir"      : os.path.join(NERF_DATA_FOLDER, f"{name}") if infolder else NERF_DATA_FOLDER,
 		"dataset"       : f"{name}.obj",
 		"up"            : up
 	}
@@ -88,7 +88,7 @@ scenes_sdf = {
 
 
 def ours_image(name, infolder=True):
-	data_dir = os.path.join(IMAGE_DATA_FOLDER, f"{name}") if infolder else IMAGE_DATA_FOLDER
+	data_dir = os.path.join(NERF_DATA_FOLDER, f"{name}") if infolder else NERF_DATA_FOLDER
 	dataset = f"{name}.bin"
 	if not os.path.exists(os.path.join(data_dir, dataset)):
 		dataset = f"{name}.exr"
@@ -110,7 +110,7 @@ scenes_image = {
 
 def ours_volume(name, ds):
 	return {
-		"data_dir" : os.path.join(VOLUME_DATA_FOLDER, f"{name}"),
+		"data_dir" : os.path.join(NERF_DATA_FOLDER, f"{name}"),
 		"dataset" : ds
 	}
 

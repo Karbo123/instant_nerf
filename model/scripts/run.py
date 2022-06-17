@@ -44,7 +44,7 @@ def parse_args():
 	parser.add_argument("--screenshot_dir", default="", help="Which directory to output screenshots to.")
 	parser.add_argument("--screenshot_spp", type=int, default=16, help="Number of samples per pixel in screenshots.")
 
-	parser.add_argument("--save_mesh", default="", help="Output a marching-cubes based mesh from the NeRF or SDF model. Supports OBJ and PLY format.")
+	parser.add_argument("--save_mesh", default="", help="Output a marching-cubes based mesh from the NeRF model. Supports OBJ and PLY format.")
 	parser.add_argument("--marching_cubes_res", default=256, type=int, help="Sets the resolution for the marching cubes grid.")
 
 	parser.add_argument("--width", "--screenshot_w", type=int, default=0, help="Resolution width of GUI and screenshots.")
@@ -75,22 +75,12 @@ if __name__ == "__main__":
 		else:
 			raise ValueError("Must specify either a valid '--mode' or '--scene' argument.")
 
-	if args.mode == "sdf":
-		mode = ngp.TestbedMode.Sdf
-		configs_dir = os.path.join(ROOT_DIR, "configs", "sdf")
-		scenes = scenes_sdf
-	elif args.mode == "volume":
-		mode = ngp.TestbedMode.Volume
-		configs_dir = os.path.join(ROOT_DIR, "configs", "volume")
-		scenes = scenes_volume
-	elif args.mode == "nerf":
+	if args.mode == "nerf":
 		mode = ngp.TestbedMode.Nerf
 		configs_dir = os.path.join(ROOT_DIR, "configs", "nerf")
 		scenes = scenes_nerf
-	elif args.mode == "image":
-		mode = ngp.TestbedMode.Image
-		configs_dir = os.path.join(ROOT_DIR, "configs", "image")
-		scenes = scenes_image
+	else:
+		raise RuntimeError(f"Unknown mode: {args.mode}")
 
 	base_network = os.path.join(configs_dir, "base.json")
 	if args.scene in scenes:
@@ -102,9 +92,6 @@ if __name__ == "__main__":
 
 	testbed = ngp.Testbed(mode)
 	testbed.nerf.sharpen = float(args.sharpen)
-
-	if mode == ngp.TestbedMode.Sdf:
-		testbed.tonemap_curve = ngp.TonemapCurve.ACES
 
 	if args.scene:
 		scene = args.scene

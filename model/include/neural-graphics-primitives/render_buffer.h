@@ -16,7 +16,6 @@
 
 #include <neural-graphics-primitives/common.h>
 #include <neural-graphics-primitives/common_device.cuh>
-#include <neural-graphics-primitives/dlss.h>
 
 #include <tiny-cuda-nn/gpu_memory.h>
 
@@ -151,23 +150,10 @@ public:
 		}
 	}
 
-	void enable_dlss(const Eigen::Vector2i& out_res);
-	void disable_dlss();
-	void set_dlss_sharpening(float value) {
-		m_dlss_sharpening = value;
-	}
-
-	const std::shared_ptr<IDlss>& dlss() const {
-		return m_dlss;
-	}
-
 private:
 	uint32_t m_spp = 0;
 	EColorSpace m_color_space = EColorSpace::Linear;
 	ETonemapCurve m_tonemap_curve = ETonemapCurve::Identity;
-
-	std::shared_ptr<IDlss> m_dlss;
-	float m_dlss_sharpening = 0.0f;
 
 	Eigen::Vector2i m_in_resolution = Eigen::Vector2i::Zero();
 

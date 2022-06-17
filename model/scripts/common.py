@@ -33,9 +33,6 @@ NGP_DATA_FOLDER = os.environ.get("NGP_DATA_FOLDER") or os.path.join(ROOT_DIR, "d
 
 
 NERF_DATA_FOLDER = os.path.join(NGP_DATA_FOLDER, "nerf")
-SDF_DATA_FOLDER = os.path.join(NGP_DATA_FOLDER, "sdf")
-IMAGE_DATA_FOLDER = os.path.join(NGP_DATA_FOLDER, "image")
-VOLUME_DATA_FOLDER = os.path.join(NGP_DATA_FOLDER, "volume")
 
 # Search for pyngp in the build folder.
 sys.path += [os.path.dirname(pyd) for pyd in glob.iglob(os.path.join(ROOT_DIR, "build*", "**/*.pyd"), recursive=True)]
