@@ -77,7 +77,7 @@ include_directories("dependencies/filesystem")
 # OpenMP #
 ##########
 find_package(OpenMP)
-if (OPENMP_FOUND)
+if (OpenMP_FOUND)
 	set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} ${OpenMP_C_FLAGS}")
 	set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${OpenMP_CXX_FLAGS}")
 endif()
@@ -85,10 +85,8 @@ endif()
 ##########
 # Python #
 ##########
-find_package(Python 3.7 COMPONENTS Interpreter Development)
-if (Python_FOUND)
-	add_subdirectory("dependencies/pybind11")
-endif()
+find_package(Python 3.7 REQUIRED COMPONENTS Interpreter Development)
+add_subdirectory("dependencies/pybind11")
 
 ##############
 # tinylogger #
@@ -139,12 +137,11 @@ target_link_libraries(testbed PUBLIC ngp)
 target_compile_options(testbed PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:${CUDA_NVCC_FLAGS}>)
 target_compile_definitions(testbed PUBLIC ${NGP_DEFINITIONS} ${TCNN_DEFINITIONS})
 
-if (Python_FOUND)
-	add_library(pyngp SHARED src/python_api.cu)
-	set_target_properties(pyngp PROPERTIES CXX_VISIBILITY_PRESET "hidden")
-	set_target_properties(pyngp PROPERTIES CUDA_VISIBILITY_PRESET "hidden")
-	target_link_libraries(pyngp PUBLIC ngp ${PYTHON_LIBRARIES} pybind11::module)
-	target_compile_options(pyngp PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:${CUDA_NVCC_FLAGS}>)
-	target_compile_definitions(pyngp PUBLIC -DNGP_PYTHON ${NGP_DEFINITIONS} ${TCNN_DEFINITIONS})
-	pybind11_extension(pyngp)
-endif()
+add_library(pyngp SHARED src/python_api.cu)
+include_directories(${Python_INCLUDE_DIRS})
+set_target_properties(pyngp PROPERTIES CXX_VISIBILITY_PRESET "hidden")
+set_target_properties(pyngp PROPERTIES CUDA_VISIBILITY_PRESET "hidden")
+target_link_libraries(pyngp PUBLIC ngp ${Python_LIBRARIES} pybind11::module)
+target_compile_options(pyngp PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:${CUDA_NVCC_FLAGS}>)
+target_compile_definitions(pyngp PUBLIC ${NGP_DEFINITIONS} ${TCNN_DEFINITIONS})
+pybind11_extension(pyngp)

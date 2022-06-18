@@ -118,8 +118,6 @@ if __name__ == "__main__":
 	testbed.nerf.render_with_camera_distortion = True
 
 	network_stem = os.path.splitext(os.path.basename(network))[0]
-	if args.mode == "sdf":
-		setup_colored_sdf(testbed, args.scene)
 
 	if args.near_distance >= 0.0:
 		print("NeRF training ray near_distance ", args.near_distance)

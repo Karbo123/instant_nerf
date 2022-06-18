@@ -31,10 +31,8 @@
 
 #include <filesystem/path.h>
 
-#ifdef NGP_PYTHON
 #include <pybind11/pybind11.h>
 #include <pybind11/numpy.h>
-#endif
 
 #include <thread>
 
@@ -253,12 +251,9 @@ public:
 	size_t first_encoder_param();
 	size_t n_encoding_params();
 
-#ifdef NGP_PYTHON
 	pybind11::dict compute_marching_cubes_mesh(Eigen::Vector3i res3d = Eigen::Vector3i::Constant(128), BoundingBox aabb = BoundingBox{Eigen::Vector3f::Zero(), Eigen::Vector3f::Ones()}, float thresh=2.5f);
 	pybind11::array_t<float> render_to_cpu(int width, int height, int spp, bool linear, float start_t, float end_t, float fps, float shutter_fraction);
 	pybind11::array_t<float> render_with_rolling_shutter_to_cpu(const Eigen::Matrix<float, 3, 4>& camera_transform_start, const Eigen::Matrix<float, 3, 4>& camera_transform_end, const Eigen::Vector4f& rolling_shutter, int width, int height, int spp, bool linear);
-	pybind11::array_t<float> screenshot(bool linear) const;
-#endif
 
 	void draw_visualizations(ImDrawList* list, const Eigen::Matrix<float, 3, 4>& camera_matrix);
 	void train_and_render(bool skip_rendering);
@@ -484,9 +479,7 @@ public:
 			void update_metadata(int first = 0, int last = -1);
 			void update_transforms(int first = 0, int last = -1);
 
-#ifdef NGP_PYTHON
 			void set_image(int frame_idx, pybind11::array_t<float> img, pybind11::array_t<float> depth_img, float depth_scale);
-#endif
 
 			void reset_camera_extrinsics();
 			void export_camera_extrinsics(const std::string& filename, bool export_extrinsics_in_quat_format = true);

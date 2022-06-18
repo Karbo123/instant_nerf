@@ -6,9 +6,17 @@ This repository tries to exactly reproduce the performance of instant-ngp in ter
 
 # What's Changed Compared to the Official Implementation?
 
+**Only Support/Allow:**
+- only NeRF (intentionally remove other primitives)
+- no GUI (for fast experiment)
+- build on Linux with Python (because most people use Linux's Python)
+- no DLSS, no OptiX (useless, so remove them)
+
 TODO
-- [x] remove `GUI`
-- [ ] only support `Blender` dataset loading
+- [ ] ray marching (point location sampling + composite point info)
+- [ ] use tiny-cuda-nn's encoding + network, and enable learning using torch's optimizer 
+- [ ] remove internal c++ file loading; loading from torch.Tensor instead
+- [ ] unified coordinate format (e.g. Blender only)
 
 # Installation
 

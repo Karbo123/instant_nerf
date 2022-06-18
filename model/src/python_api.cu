@@ -142,10 +142,6 @@ py::array_t<float> Testbed::render_with_rolling_shutter_to_cpu(const Eigen::Matr
 	return result;
 }
 
-py::array_t<float> Testbed::screenshot(bool linear) const {
-	throw std::runtime_error{"testbed.screenshot() in only supported when compiling with NGP_GUI."};
-}
-
 PYBIND11_MODULE(pyngp, m) {
 	m.doc() = "Instant neural graphics primitives";
 
@@ -262,7 +258,6 @@ PYBIND11_MODULE(pyngp, m) {
 			py::arg("spp") = 1,
 			py::arg("linear") = true
 		)
-		.def("screenshot", &Testbed::screenshot, "Takes a screenshot of the current window contents.", py::arg("linear")=true)
 		.def("train", &Testbed::train, py::call_guard<py::gil_scoped_release>(), "Perform a specified number of training steps.")
 		.def("reset", &Testbed::reset_network, "Reset training.")
 		.def("reset_accumulation", &Testbed::reset_accumulation, "Reset rendering accumulation.")
