@@ -50,19 +50,19 @@ __global__ void extract_density_and_attr(
 	const uint32_t n_rows_density,    const bool is_col_major_density,    const T* __restrict__ density,
 	const uint32_t n_rows_out,        const bool is_col_major_out,              T* __restrict__ out
 ) {
-	const uint32_t j = threadIdx.x + blockIdx.x * blockDim.x;
-	if (j >= n_elements) return;
+	const uint32_t ij = threadIdx.x + blockIdx.x * blockDim.x;
+	if (ij >= n_elements) return;
 
+	const uint32_t batch_size = n_elements / (1 + n_extra_invar_attr);
 	auto indexing = [&](uint32_t i, uint32_t j, uint32_t n_rows, bool is_col_major) {
 		if (is_col_major) return i + j * n_rows;
-		return i * n_elements + j;
+		return i * batch_size + j;
 	};
 	
-	// density and invar_attr
-	#pragma unroll
-	for (uint32_t i = 0; i < 1 + n_extra_invar_attr; ++i) {
-		out[indexing(3 + n_extra_var_attr + i, j, n_rows_out, is_col_major_out)] = density[indexing(0, j, n_rows_density, is_col_major_density)];
-	}
+	const uint32_t j = ij / (1 + n_extra_invar_attr); // batch index
+	const uint32_t i = ij - j * (1 + n_extra_invar_attr); // dim index; if i==0, write density, else write invar_attr
+
+	out[indexing(3 + n_extra_var_attr + i, j, n_rows_out, is_col_major_out)] = density[indexing(0, j, n_rows_density, is_col_major_density)];
 }
 
 template <typename T>
@@ -179,13 +179,14 @@ public:
 		// density_network_output.shape == (1 + n_extra_invar_attr + 15, batch_size)
 		// output.shape == (3 + n_extra_var_attr + 1 + n_extra_invar_attr, batch_size)
 		tcnn::linear_kernel(extract_density_and_attr<T>, 0, stream,
-			batch_size,
+			batch_size * (1 + n_extra_invar_attr),
 			m_density_network->padded_output_width(), is_ColumnMajor(density_network_output), density_network_output.data(),
 			this->padded_output_width(),              is_ColumnMajor(output),                 output.data()
 		);
 	}
 
 	uint32_t padded_density_output_width() const {
+		// next_multiple(1 + n_extra_invar_attr + 15, alignment)
 		return m_density_network->padded_output_width();
 	}
 
@@ -225,8 +226,11 @@ public:
 		forward->rgb_network_ctx = m_rgb_network->forward(stream, forward->rgb_network_input, output ? &forward->rgb_network_output : nullptr, use_inference_params, prepare_input_gradients);
 
 		if (output) {
-			tcnn::linear_kernel(extract_density<T>, 0, stream,
-				batch_size, m_dir_encoding->preferred_output_layout() == tcnn::AoS ? forward->density_network_output.stride() : 1, padded_output_width(), forward->density_network_output.data(), output->data()+3
+			auto is_ColumnMajor = [](const tcnn::GPUMatrixDynamic<T>& mat){ return mat.layout()==tcnn::MatrixLayout::ColumnMajor; };
+			tcnn::linear_kernel(extract_density_and_attr<T>, 0, stream,
+				batch_size * (1 + n_extra_invar_attr),
+				m_density_network->padded_output_width(), is_ColumnMajor(forward->density_network_output), forward->density_network_output.data(),
+				this->padded_output_width(),              is_ColumnMajor(*output),                         output->data()
 			);
 		}
 
@@ -250,6 +254,7 @@ public:
 
 		tcnn::GPUMatrix<T> dL_drgb{m_rgb_network->padded_output_width(), batch_size, stream};
 		CUDA_CHECK_THROW(cudaMemsetAsync(dL_drgb.data(), 0, dL_drgb.n_bytes(), stream));
+		// copy first 3 rows of `dL_doutput` to `dL_drgb`, i.e. copy the RGB gradient to `dL_drgb`
 		tcnn::linear_kernel(extract_rgb<T>, 0, stream,
 			batch_size*3, dL_drgb.m(), dL_doutput.m(), dL_doutput.data(), dL_drgb.data()
 		);
