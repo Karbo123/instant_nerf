@@ -26,6 +26,8 @@
 
 #include <tiny-cuda-nn/network_with_input_encoding.h>
 
+#include <neural-graphics-primitives/extra_attr.h>
+
 NGP_NAMESPACE_BEGIN
 
 template <typename T>
@@ -40,6 +42,27 @@ __global__ void extract_density(
 	if (i >= n_elements) return;
 
 	rgbd[i * rgbd_stride] = density[i * density_stride];
+}
+
+template <typename T>
+__global__ void extract_density_and_attr(
+	const uint32_t n_elements,
+	const uint32_t n_rows_density,    const bool is_col_major_density,    const T* __restrict__ density,
+	const uint32_t n_rows_out,        const bool is_col_major_out,              T* __restrict__ out
+) {
+	const uint32_t j = threadIdx.x + blockIdx.x * blockDim.x;
+	if (j >= n_elements) return;
+
+	auto indexing = [&](uint32_t i, uint32_t j, uint32_t n_rows, bool is_col_major) {
+		if (is_col_major) return i + j * n_rows;
+		return i * n_elements + j;
+	};
+	
+	// density and invar_attr
+	#pragma unroll
+	for (uint32_t i = 0; i < 1 + n_extra_invar_attr; ++i) {
+		out[indexing(3 + n_extra_var_attr + i, j, n_rows_out, is_col_major_out)] = density[indexing(0, j, n_rows_density, is_col_major_density)];
+	}
 }
 
 template <typename T>
@@ -80,59 +103,85 @@ public:
 
 	NerfNetwork(uint32_t n_pos_dims, uint32_t n_dir_dims, uint32_t n_extra_dims, uint32_t dir_offset, const json& pos_encoding, const json& dir_encoding, const json& density_network, const json& rgb_network) : m_n_pos_dims{n_pos_dims}, m_n_dir_dims{n_dir_dims}, m_dir_offset{dir_offset}, m_n_extra_dims{n_extra_dims} {
 		m_pos_encoding.reset(tcnn::create_encoding<T>(n_pos_dims, pos_encoding, density_network.contains("otype") && (tcnn::equals_case_insensitive(density_network["otype"], "FullyFusedMLP") || tcnn::equals_case_insensitive(density_network["otype"], "MegakernelMLP")) ? 16u : 8u));
-		uint32_t rgb_alignment = tcnn::minimum_alignment(rgb_network);
-		m_dir_encoding.reset(tcnn::create_encoding<T>(m_n_dir_dims + m_n_extra_dims, dir_encoding, rgb_alignment));
+		m_rgb_alignment = tcnn::minimum_alignment(rgb_network);
+		m_dir_encoding.reset(tcnn::create_encoding<T>(m_n_dir_dims + m_n_extra_dims, dir_encoding, m_rgb_alignment));
 
 		json local_density_network_config = density_network;
 		local_density_network_config["n_input_dims"] = m_pos_encoding->padded_output_width();
 		if (!density_network.contains("n_output_dims")) {
-			local_density_network_config["n_output_dims"] = 16;
+			local_density_network_config["n_output_dims"] = 1 + n_extra_invar_attr + 15; // auto padded
 		}
 		m_density_network.reset(tcnn::create_network<T>(local_density_network_config));
 
-		m_rgb_network_input_width = tcnn::next_multiple(m_dir_encoding->padded_output_width() + m_density_network->padded_output_width(), rgb_alignment);
+		// NOTE
+		//   input needn't to be aligned
+		//   but the output will automatically aligned, which means the padded output buffer will all be computed
+		//   see: https://github.com/NVlabs/tiny-cuda-nn/blob/ee585fa47e99de4c26f6ae88be7bcb82b9295310/src/fully_fused_mlp.cu#L658-L679
+		//   for encoding, irrelevant regions are padded with zeros (write with zeros)
+		// m_dir_encoding->padded_output_width() is usually 32, alignment is `m_rgb_alignment` (ref. create_encoding())
+		m_rgb_network_input_width = tcnn::next_multiple(m_density_network->padded_output_width() + m_dir_encoding->padded_output_width(), m_rgb_alignment);
 
 		json local_rgb_network_config = rgb_network;
 		local_rgb_network_config["n_input_dims"] = m_rgb_network_input_width;
-		local_rgb_network_config["n_output_dims"] = 3;
+		local_rgb_network_config["n_output_dims"] = 3 + n_extra_var_attr; // auto padded
 		m_rgb_network.reset(tcnn::create_network<T>(local_rgb_network_config));
 	}
 
 	virtual ~NerfNetwork() { }
 
 	void inference_mixed_precision_impl(cudaStream_t stream, const tcnn::GPUMatrixDynamic<float>& input, tcnn::GPUMatrixDynamic<T>& output, bool use_inference_params = true) override {
+		// input.shape == (3 + 3, batch_size)  # pos + dir
+		// output.shape == (3 + n_extra_var_attr + 1 + n_extra_invar_attr, batch_size)
 		uint32_t batch_size = input.n();
-		tcnn::GPUMatrixDynamic<T> density_network_input{m_pos_encoding->padded_output_width(), batch_size, stream, m_pos_encoding->preferred_output_layout()};
+
+		// combine density network output & direction encoded feat
+		// (1 + n_extra_invar_attr + 15 + dir_enc_dim, batch_size)
 		tcnn::GPUMatrixDynamic<T> rgb_network_input{m_rgb_network_input_width, batch_size, stream, m_dir_encoding->preferred_output_layout()};
 
+		// (pos_enc_dim, batch_size)
+		tcnn::GPUMatrixDynamic<T> density_network_input{m_pos_encoding->padded_output_width(), batch_size, stream, m_pos_encoding->preferred_output_layout()};
+		// encode position
+		m_pos_encoding->inference_mixed_precision(stream,
+			input.slice_rows(0, m_pos_encoding->input_width()), // pos  (3, batch_size)
+			density_network_input, // (pos_enc_dim, batch_size)
+			use_inference_params
+		);
+
+		// (1 + n_extra_invar_attr + 15, batch_size)
 		tcnn::GPUMatrixDynamic<T> density_network_output = rgb_network_input.slice_rows(0, m_density_network->padded_output_width());
-		tcnn::GPUMatrixDynamic<T> rgb_network_output{output.data(), m_rgb_network->padded_output_width(), batch_size, output.layout()};
-
-		m_pos_encoding->inference_mixed_precision(
-			stream,
-			input.slice_rows(0, m_pos_encoding->input_width()),
-			density_network_input,
+		// infer density network
+		m_density_network->inference_mixed_precision(stream, 
+			density_network_input,  // (pos_enc_dim, batch_size)
+			density_network_output, // (1 + n_extra_invar_attr + 15, batch_size)
 			use_inference_params
 		);
 
-		m_density_network->inference_mixed_precision(stream, density_network_input, density_network_output, use_inference_params);
-
+		// (dir_enc_dim, batch_size)
 		auto dir_out = rgb_network_input.slice_rows(m_density_network->padded_output_width(), m_dir_encoding->padded_output_width());
-		m_dir_encoding->inference_mixed_precision(
-			stream,
-			input.slice_rows(m_dir_offset, m_dir_encoding->input_width()),
-			dir_out,
+		// encode direction
+		m_dir_encoding->inference_mixed_precision(stream,
+			input.slice_rows(m_dir_offset, m_dir_encoding->input_width()), // (3, batch_size)
+			dir_out, // (dir_enc_dim, batch_size)
 			use_inference_params
 		);
 
-		m_rgb_network->inference_mixed_precision(stream, rgb_network_input, rgb_network_output, use_inference_params);
+		// (3 + n_extra_var_attr, batch_size)
+		tcnn::GPUMatrixDynamic<T> rgb_network_output{output.data(), m_rgb_network->padded_output_width(), batch_size, output.layout()};
+		// infer rgb network
+		m_rgb_network->inference_mixed_precision(stream, 
+			rgb_network_input,  // (1 + n_extra_invar_attr + 15 + dir_enc_dim, batch_size)
+			rgb_network_output, // (3 + n_extra_var_attr, batch_size)
+			use_inference_params
+		);
 
-		tcnn::linear_kernel(extract_density<T>, 0, stream,
+		auto is_ColumnMajor = [](const tcnn::GPUMatrixDynamic<T>& mat){ return mat.layout()==tcnn::MatrixLayout::ColumnMajor; };
+		// copy density + invar_attr to output
+		// density_network_output.shape == (1 + n_extra_invar_attr + 15, batch_size)
+		// output.shape == (3 + n_extra_var_attr + 1 + n_extra_invar_attr, batch_size)
+		tcnn::linear_kernel(extract_density_and_attr<T>, 0, stream,
 			batch_size,
-			density_network_output.layout() == tcnn::AoS ? density_network_output.stride() : 1,
-			output.layout() == tcnn::AoS ? padded_output_width() : 1,
-			density_network_output.data(),
-			output.data() + 3 * (output.layout() == tcnn::AoS ? 1 : batch_size)
+			m_density_network->padded_output_width(), is_ColumnMajor(density_network_output), density_network_output.data(),
+			this->padded_output_width(),              is_ColumnMajor(output),                 output.data()
 		);
 	}
 
@@ -445,7 +494,8 @@ public:
 	}
 
 	uint32_t padded_output_width() const override {
-		return std::max(m_rgb_network->padded_output_width(), (uint32_t)4);
+		uint32_t actual_width = 3u + n_extra_var_attr + 1u + n_extra_invar_attr;
+		return tcnn::next_multiple(actual_width, m_rgb_alignment);
 	}
 
 	uint32_t input_width() const override {
@@ -531,6 +581,7 @@ private:
 	uint32_t m_n_dir_dims;
 	uint32_t m_n_extra_dims; // extra dimensions are assumed to be part of a compound encoding with dir_dims
 	uint32_t m_dir_offset;
+	uint32_t m_rgb_alignment;
 
 	// // Storage of forward pass data
 	struct ForwardContext : public tcnn::Context {
