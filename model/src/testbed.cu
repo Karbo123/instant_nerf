@@ -561,41 +561,26 @@ void Testbed::reset_network() {
 
 		m_nerf.training.reset_extra_dims(m_rng);
 
-		json& dir_encoding_config = config["dir_encoding"];
-		json& rgb_network_config = config["rgb_network"];
-
-		uint32_t n_dir_dims = 3;
 		uint32_t n_extra_dims = m_nerf.training.dataset.n_extra_dims();
 		m_network = m_nerf_network = std::make_shared<NerfNetwork<precision_t>>(
-			dims.n_pos,
-			n_dir_dims,
-			n_extra_dims,
-			dims.n_pos + 1, // The offset of 1 comes from the dt member variable of NerfCoordinate. HACKY
 			encoding_config,
-			dir_encoding_config,
-			network_config,
-			rgb_network_config
+			network_config
 		);
 
 		m_encoding = m_nerf_network->encoding();
-		n_encoding_params = m_encoding->n_params() + m_nerf_network->dir_encoding()->n_params();
+		n_encoding_params = m_encoding->n_params();
 
 		tlog::info()
-			<< "Density model: " << dims.n_pos
+			<< "MLP model: " << dims.n_pos
 			<< "--[" << std::string(encoding_config["otype"])
 			<< "]-->" << m_nerf_network->encoding()->padded_output_width()
 			<< "--[" << std::string(network_config["otype"])
-			<< "(neurons=" << (int)network_config["n_neurons"] << ",layers=" << ((int)network_config["n_hidden_layers"]+2) << ")"
-			<< "]-->" << 1
-			;
-
-		tlog::info()
-			<< "Color model:   " << n_dir_dims
-			<< "--[" << std::string(dir_encoding_config["otype"])
-			<< "]-->" << m_nerf_network->dir_encoding()->padded_output_width() << "+" << network_config.value("n_output_dims", 16u)
-			<< "--[" << std::string(rgb_network_config["otype"])
-			<< "(neurons=" << (int)rgb_network_config["n_neurons"] << ",layers=" << ((int)rgb_network_config["n_hidden_layers"]+2) << ")"
-			<< "]-->" << 3
+			<< "(width=" << (int)network_config["n_neurons"] << ",num_hidden=" << (int)network_config["n_hidden_layers"] << ")"
+			<< "]-->("
+			<< "rgb=3,"
+			<< "density=1,"
+			<< "attr=" << (int)NerfNetwork<precision_t>::n_extra_attr
+			<< ")"
 			;
 
 		// Create distortion map model
