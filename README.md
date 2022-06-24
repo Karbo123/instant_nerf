@@ -1,6 +1,8 @@
-# PyTorch Implementation of Instant Neural Graphics Primitives (unofficial)
+# Advanced Instant Neural Graphics Primitives
 
-This repository tries to exactly reproduce the performance of instant-ngp in terms of both accuracy and speed, but it may only involve the **Neural Radiance Field (NeRF)** part, because NeRF is becoming increasingly popular among the research community.
+this repository tries to add more function supports to instant-ngp in a pure CUDA C++ level
+
+modification is based on [instant-ngp d9e9bff](https://github.com/NVlabs/instant-ngp/tree/d9e9bff0925d7e4d2fe0b8e8d16ab0cee94468b6) 
 
 **Work in Progress**
 
@@ -13,16 +15,13 @@ This repository tries to exactly reproduce the performance of instant-ngp in ter
 - no DLSS, no OptiX (useless, so remove them)
 
 TODO
-- [ ] ray marching (point location sampling + composite point info)
-- [ ] use tiny-cuda-nn's encoding + network, and enable learning using torch's optimizer 
-- [ ] remove internal c++ file loading; loading from torch.Tensor instead
-- [ ] unified coordinate format (e.g. Blender only)
+- [ ] extra attribute rendering
 
 # Installation
 
 ```bash
-git clone git@github.com:Karbo123/pytorch_instant_ngp.git --depth=1
-cd pytorch_instant_ngp
+git clone git@github.com:Karbo123/instant_nerf.git --depth=1
+cd instant_nerf
 git submodule update --init --recursive
 ln -s `pwd`/third_party/instant-ngp/dependencies `pwd`/model
 cd model && source build.sh

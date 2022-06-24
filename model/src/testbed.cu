@@ -491,10 +491,11 @@ void Testbed::reset_network() {
 	// Default config
 	json config = m_network_config;
 
-	json& encoding_config = config["encoding"];
+	json& density_encoding_config = config["density_encoding"];
+	json& density_network_config = config["density_network"];
+
 	json& loss_config = config["loss"];
 	json& optimizer_config = config["optimizer"];
-	json& network_config = config["network"];
 
 	auto dims = network_dims();
 
@@ -508,35 +509,35 @@ void Testbed::reset_network() {
 	}
 
 	// Automatically determine certain parameters if we're dealing with the (hash)grid encoding
-	if (to_lower(encoding_config.value("otype", "OneBlob")).find("grid") != std::string::npos) {
-		encoding_config["n_pos_dims"] = dims.n_pos;
+	if (to_lower(density_encoding_config.value("otype", "OneBlob")).find("grid") != std::string::npos) {
+		density_encoding_config["n_pos_dims"] = dims.n_pos;
 
-		const uint32_t n_features_per_level = encoding_config.value("n_features_per_level", 2u);
+		const uint32_t n_features_per_level = density_encoding_config.value("n_features_per_level", 2u);
 
-		if (encoding_config.contains("n_features") && encoding_config["n_features"] > 0) {
-			m_num_levels = (uint32_t)encoding_config["n_features"] / n_features_per_level;
+		if (density_encoding_config.contains("n_features") && density_encoding_config["n_features"] > 0) {
+			m_num_levels = (uint32_t)density_encoding_config["n_features"] / n_features_per_level;
 		} else {
-			m_num_levels = encoding_config.value("n_levels", 16u);
+			m_num_levels = density_encoding_config.value("n_levels", 16u);
 		}
 
 		m_level_stats.resize(m_num_levels);
 		m_first_layer_column_stats.resize(m_num_levels);
 
-		const uint32_t log2_hashmap_size = encoding_config.value("log2_hashmap_size", 15);
+		const uint32_t log2_hashmap_size = density_encoding_config.value("log2_hashmap_size", 15);
 
-		m_base_grid_resolution = encoding_config.value("base_resolution", 0);
+		m_base_grid_resolution = density_encoding_config.value("base_resolution", 0);
 		if (!m_base_grid_resolution) {
 			m_base_grid_resolution = 1u << ((log2_hashmap_size) / dims.n_pos);
-			encoding_config["base_resolution"] = m_base_grid_resolution;
+			density_encoding_config["base_resolution"] = m_base_grid_resolution;
 		}
 
 		float desired_resolution = 2048.0f; // Desired resolution of the finest hashgrid level over the unit cube
 
 		// Automatically determine suitable per_level_scale
-		m_per_level_scale = encoding_config.value("per_level_scale", 0.0f);
+		m_per_level_scale = density_encoding_config.value("per_level_scale", 0.0f);
 		if (m_per_level_scale <= 0.0f && m_num_levels > 1) {
 			m_per_level_scale = std::exp(std::log(desired_resolution * (float)m_nerf.training.dataset.aabb_scale / (float)m_base_grid_resolution) / (m_num_levels-1));
-			encoding_config["per_level_scale"] = m_per_level_scale;
+			density_encoding_config["per_level_scale"] = m_per_level_scale;
 		}
 
 		tlog::info()
@@ -560,43 +561,28 @@ void Testbed::reset_network() {
 		m_nerf.training.cam_focal_length_offset = AdamOptimizer<Vector2f>(1e-5f);
 
 		m_nerf.training.reset_extra_dims(m_rng);
-
-		json& dir_encoding_config = config["dir_encoding"];
+		
+		json& rgb_encoding_config = config["rgb_encoding"];
 		json& rgb_network_config = config["rgb_network"];
 
-		uint32_t n_dir_dims = 3;
-		uint32_t n_extra_dims = m_nerf.training.dataset.n_extra_dims();
+		json& attr_encoding_config = config["attr_encoding"];
+		json& attr_network_config = config["attr_network"];
+
 		m_network = m_nerf_network = std::make_shared<NerfNetwork<precision_t>>(
-			dims.n_pos,
-			n_dir_dims,
-			n_extra_dims,
-			dims.n_pos + 1, // The offset of 1 comes from the dt member variable of NerfCoordinate. HACKY
-			encoding_config,
-			dir_encoding_config,
-			network_config,
-			rgb_network_config
+			// encoding
+			rgb_encoding_config,
+			density_encoding_config,
+			attr_encoding_config,
+			// network
+			rgb_network_config,
+			density_network_config,
+			attr_network_config
 		);
 
-		m_encoding = m_nerf_network->encoding();
-		n_encoding_params = m_encoding->n_params() + m_nerf_network->dir_encoding()->n_params();
-
-		tlog::info()
-			<< "Density model: " << dims.n_pos
-			<< "--[" << std::string(encoding_config["otype"])
-			<< "]-->" << m_nerf_network->encoding()->padded_output_width()
-			<< "--[" << std::string(network_config["otype"])
-			<< "(neurons=" << (int)network_config["n_neurons"] << ",layers=" << ((int)network_config["n_hidden_layers"]+2) << ")"
-			<< "]-->" << 1
-			;
-
-		tlog::info()
-			<< "Color model:   " << n_dir_dims
-			<< "--[" << std::string(dir_encoding_config["otype"])
-			<< "]-->" << m_nerf_network->dir_encoding()->padded_output_width() << "+" << network_config.value("n_output_dims", 16u)
-			<< "--[" << std::string(rgb_network_config["otype"])
-			<< "(neurons=" << (int)rgb_network_config["n_neurons"] << ",layers=" << ((int)rgb_network_config["n_hidden_layers"]+2) << ")"
-			<< "]-->" << 3
-			;
+		m_encoding = m_nerf_network->density_encoding();
+		n_encoding_params = m_nerf_network->density_encoding()->n_params() + \
+							m_nerf_network->rgb_encoding()->n_params() + \
+							((m_nerf_network->n_attr_dims() > 0) ? m_nerf_network->attr_encoding()->n_params() : 0);
 
 		// Create distortion map model
 		{
