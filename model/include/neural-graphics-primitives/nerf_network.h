@@ -135,11 +135,7 @@ public:
 		}
 
 		// calculate final output dims
-		if (m_n_attr_dims > 0) {
-			m_padded_output_width = 4u + tcnn::next_multiple(m_n_attr_dims, m_alignment);
-		} else {
-			m_padded_output_width = tcnn::next_multiple(4u, m_alignment);
-		}
+		m_padded_output_width = 4u + m_n_attr_dims;
 
 		// create density network
 		json local_density_network_config = density_network;
@@ -177,12 +173,14 @@ public:
 	) override {
 		auto batch_size = input.n();
 		
-		// [rgb, density, attr]
-		auto shared_space = MatrixT{m_shared_length_1 + m_shared_length_2 + m_shared_length_3, batch_size, stream, m_rgb_encoding->preferred_output_layout()}; 
-		auto final_network_output = MatrixT{output.data(), this->padded_output_width(), batch_size, output.layout()};
+		// allocate workspace
+		auto density_network_input = MatrixT{m_density_encoding->padded_output_width(), batch_size, stream, m_density_encoding->preferred_output_layout()};
+		auto shared_space          = MatrixT{m_shared_length_1 + m_shared_length_2 + m_shared_length_3, batch_size, stream, tcnn::MatrixLayout::RowMajor};
+		auto rgb_network_output    = MatrixT{m_rgb_network->padded_output_width(), batch_size, stream, output.layout()};
+		auto attr_network_output   = MatrixT{m_attr_network->padded_output_width(), batch_size, stream, output.layout()};
+		auto final_network_output  = MatrixT{output.data(), this->padded_output_width(), batch_size, output.layout()}; // rename actually
 
 		// density
-		auto density_network_input = MatrixT{m_density_encoding->padded_output_width(), batch_size, stream, m_density_encoding->preferred_output_layout()};
 		m_density_encoding->inference_mixed_precision(stream,
 			input.slice_rows(0, m_density_encoding->input_width()), // pos
 			density_network_input, // temp for positional encoding
@@ -202,10 +200,9 @@ public:
 			rgb_encoding_out, // tmp=[RGB, DENSITY, attr]
 			use_inference_params
 		);
-		auto rgb_network_out = final_network_output.slice_rows(0, m_rgb_network->padded_output_width());
 		m_rgb_network->inference_mixed_precision(stream, 
 			shared_space.slice_rows(0, m_shared_length_1 + m_shared_length_2), // tmp=[RGB, DENSITY, attr]
-			rgb_network_out, // out=[RGB, density, attr]
+			rgb_network_output,
 			use_inference_params
 		);
 
@@ -219,22 +216,41 @@ public:
 				attr_encoding_out, // tmp=[RGB, DENSITY, ATTR]
 				use_inference_params
 			);
-			auto attr_network_out = final_network_output.slice_rows(4, m_attr_network->padded_output_width());
 			m_attr_network->inference_mixed_precision(stream, 
 				shared_space.slice_rows(m_shared_length_1, 
 										m_shared_length_2 + m_shared_length_3), // tmp=[RGB, DENSITY, ATTR], 
-				attr_network_out, // out=[RGB, density, ATTR]
+				attr_network_output,
 				use_inference_params
 			);
 		}
 
+		// copy rgb from `rgb_network_output` to `final_network_output`
+		tcnn::linear_kernel(submatrix_op<CopyOverwrite,T, T>, 0, stream,
+			3u * batch_size,
+			final_network_output.data(), final_network_output.stride(), final_network_output.layout() == tcnn::MatrixLayout::ColumnMajor,
+			0u, 0u, 3u, batch_size, // copy to the first row
+			rgb_network_output.data(), rgb_network_output.stride(), rgb_network_output.layout() == tcnn::MatrixLayout::ColumnMajor,
+			0u, 0u,
+			T(0)
+		);
+
 		// copy density from `shared_space` to `final_network_output`
 		tcnn::linear_kernel(submatrix_op<CopyOverwrite,T, T>, 0, stream,
-			batch_size,
+			1u * batch_size,
 			final_network_output.data(), final_network_output.stride(), final_network_output.layout() == tcnn::MatrixLayout::ColumnMajor,
 			3u, 0u, 4u, batch_size, // copy to the third row
 			shared_space.data(), shared_space.stride(), shared_space.layout() == tcnn::MatrixLayout::ColumnMajor,
-			m_shared_length_1, 0u, // the first row is density
+			m_shared_length_1, 0u,
+			T(0)
+		);
+
+		// copy attr from `attr_network_output` to `final_network_output`
+		tcnn::linear_kernel(submatrix_op<CopyOverwrite,T, T>, 0, stream,
+			m_n_attr_dims * batch_size,
+			final_network_output.data(), final_network_output.stride(), final_network_output.layout() == tcnn::MatrixLayout::ColumnMajor,
+			4u, 0u, 4u + m_n_attr_dims, batch_size, // copy to the fourth row
+			attr_network_output.data(), attr_network_output.stride(), attr_network_output.layout() == tcnn::MatrixLayout::ColumnMajor,
+			0u, 0u,
 			T(0)
 		);
 	}
@@ -254,17 +270,20 @@ public:
 
 		auto forward = std::make_unique<ForwardContext>();
 		
-		// tmp=[rgb, density, attr]
-		forward->shared_space = {m_shared_length_1 + m_shared_length_2 + m_shared_length_3, batch_size, stream, m_rgb_encoding->preferred_output_layout()};
-		// temp for positional encoding
+		// allocate workspace
 		forward->density_network_input = {m_density_encoding->padded_output_width(), batch_size, stream, m_density_encoding->preferred_output_layout()};
+		forward->shared_space          = {m_shared_length_1 + m_shared_length_2 + m_shared_length_3, batch_size, stream, tcnn::MatrixLayout::RowMajor};
+		if (output) forward->rgb_network_output  = MatrixT{m_rgb_network->padded_output_width(), batch_size, stream, output->layout()};
+		if (output) forward->attr_network_output = MatrixT{m_attr_network->padded_output_width(), batch_size, stream, output->layout()};
 		
-		// out=[rgb, density, attr]
+		// if it requires output, final results will be saved to `output->data()`
 		MatrixT final_network_output{nullptr, 0, 0};
 		if (output) {
-			// if it requires output, final results will be saved to `output->data()`
 			final_network_output = MatrixT{output->data(), this->padded_output_width(), batch_size, output->layout()};
 		}
+
+		// // // // // // // // // // // // // // // // // // // // // // // // // // // // 
+		// DENSITY
 
 		// encoding position
 		forward->density_encoding_ctx = m_density_encoding->forward(stream,
@@ -280,6 +299,9 @@ public:
 			use_inference_params, prepare_input_gradients
 		);
 
+		// // // // // // // // // // // // // // // // // // // // // // // // // // // // 
+		// RGB
+
 		// encoding direction for rgb
 		auto rgb_encoding_out = forward->shared_space.slice_rows(0, m_shared_length_1);
 		forward->rgb_encoding_ctx = m_rgb_encoding->forward(stream,
@@ -289,15 +311,14 @@ public:
 		);
 
 		// rgb network
-		if (output) {
-			// we must store the full output
-			forward->rgb_network_output = MatrixT{m_rgb_network->padded_output_width(), batch_size, stream, output->layout()};
-		}
 		forward->rgb_network_ctx = m_rgb_network->forward(stream, 
 			forward->shared_space.slice_rows(0, m_shared_length_1 + m_shared_length_2), 
 			output ? &forward->rgb_network_output : nullptr, 
 			use_inference_params, prepare_input_gradients
 		);
+
+		// // // // // // // // // // // // // // // // // // // // // // // // // // // // 
+		// ATTR
 
 		// if have attribute
 		if (m_n_attr_dims > 0) {
@@ -311,37 +332,44 @@ public:
 				&attr_encoding_out, // tmp=[RGB, DENSITY, ATTR]
 				use_inference_params, prepare_input_gradients
 			);
+
 			// attr network
-			auto attr_network_out = MatrixT{nullptr, 0, 0};
-			if (output) {
-				attr_network_out = final_network_output.slice_rows(4, m_attr_network->padded_output_width());
-			}
 			forward->attr_network_ctx = m_attr_network->forward(stream, 
 				forward->shared_space.slice_rows(m_shared_length_1,
-										m_shared_length_2 + m_shared_length_3), 
-				output ? &attr_network_out : nullptr, 
+										         m_shared_length_2 + m_shared_length_3), 
+				output ? &forward->attr_network_output : nullptr, 
 				use_inference_params, prepare_input_gradients
 			);
 		}
 
 		if (output) {
-			// copy rgb result to `final_network_output`
-			tcnn::linear_kernel(submatrix_op<CopyOverwrite, T, T>, 0, stream,
+			// copy rgb from `rgb_network_output` to `final_network_output`
+			tcnn::linear_kernel(submatrix_op<CopyOverwrite,T, T>, 0, stream,
 				3u * batch_size,
 				final_network_output.data(), final_network_output.stride(), final_network_output.layout() == tcnn::MatrixLayout::ColumnMajor,
-				0u, 0u, 3u, batch_size, // the first 3 rows are rgb
+				0u, 0u, 3u, batch_size, // copy to the first row
 				forward->rgb_network_output.data(), forward->rgb_network_output.stride(), forward->rgb_network_output.layout() == tcnn::MatrixLayout::ColumnMajor,
-				0u, 0u, // the first 3 rows are rgb
+				0u, 0u,
 				T(0)
 			);
 
-			// copy density from `forward->shared_space` to `final_network_output`
-			tcnn::linear_kernel(submatrix_op<CopyOverwrite, T, T>, 0, stream,
-				batch_size,
+			// copy density from `shared_space` to `final_network_output`
+			tcnn::linear_kernel(submatrix_op<CopyOverwrite,T, T>, 0, stream,
+				1u * batch_size,
 				final_network_output.data(), final_network_output.stride(), final_network_output.layout() == tcnn::MatrixLayout::ColumnMajor,
-				3u, 0u, 4u, batch_size, // the third row is density
+				3u, 0u, 4u, batch_size, // copy to the third row
 				forward->shared_space.data(), forward->shared_space.stride(), forward->shared_space.layout() == tcnn::MatrixLayout::ColumnMajor,
-				m_shared_length_1, 0u, // the first row in the region is density
+				m_shared_length_1, 0u,
+				T(0)
+			);
+
+			// copy attr from `attr_network_output` to `final_network_output`
+			tcnn::linear_kernel(submatrix_op<CopyOverwrite,T, T>, 0, stream,
+				m_n_attr_dims * batch_size,
+				final_network_output.data(), final_network_output.stride(), final_network_output.layout() == tcnn::MatrixLayout::ColumnMajor,
+				4u, 0u, 4u + m_n_attr_dims, batch_size, // copy to the fourth row
+				forward->attr_network_output.data(), forward->attr_network_output.stride(), forward->attr_network_output.layout() == tcnn::MatrixLayout::ColumnMajor,
+				0u, 0u,
 				T(0)
 			);
 		}
@@ -365,7 +393,7 @@ public:
 		const auto& forward = dynamic_cast<const ForwardContext&>(ctx);
 
 		// gradient of tmp
-		auto dL_dshared_space = MatrixT{m_shared_length_1 + m_shared_length_2 + m_shared_length_3, batch_size, stream, m_rgb_encoding->preferred_output_layout()};
+		auto dL_dshared_space = MatrixT{m_shared_length_1 + m_shared_length_2 + m_shared_length_3, batch_size, stream, tcnn::MatrixLayout::RowMajor};
 
 		// // // // // // // // // // // // // // // // // // // // // // // // // // // // 
 		// RGB
@@ -402,7 +430,7 @@ public:
 			m_rgb_encoding->backward(stream, *forward.rgb_encoding_ctx,
 				input.slice_rows(m_dir_offset, m_rgb_encoding->input_width()), // in
 				forward.shared_space.slice_rows(0, m_shared_length_1), // out
-				dL_drgb_network_input.slice_rows(0, m_shared_length_1), // dL_doutput
+				dL_dshared_space.slice_rows(0, m_shared_length_1), // dL_doutput
 				dL_dinput ? &dL_drgb_encoding_input : nullptr, // dL_dinput
 				use_inference_params, param_gradients_mode
 			);
@@ -441,7 +469,7 @@ public:
 			m_attr_network->backward(stream, *forward.attr_network_ctx, 
 				forward.shared_space.slice_rows(m_shared_length_1, 
 											    m_shared_length_2 + m_shared_length_3), // in
-				output.slice_rows(4, m_attr_network->padded_output_width()), // out (it matters what the padded region is filled)
+				forward.attr_network_output, // out (it matters what the padded region is filled)
 				dL_dattr, // dL_doutput (if input is padded, it should be padded with zeros)
 				&dL_dattr_network_input, // dL_dinput
 				use_inference_params, param_gradients_mode // because it overwrites the gradient buffer, so we need to make backup (i.e. dL_ddensity_first_row)
@@ -480,7 +508,7 @@ public:
 					input.slice_rows(m_dir_offset, m_attr_encoding->input_width()), // in
 					forward.shared_space.slice_rows(m_shared_length_1 + m_shared_length_2, 
 													m_shared_length_3), // out
-					dL_dattr_network_input.slice_rows(m_shared_length_2, m_shared_length_3), // dL_doutput
+					dL_dshared_space.slice_rows(m_shared_length_1 + m_shared_length_2, m_shared_length_3), // dL_doutput
 					dL_dinput ? &dL_dattr_encoding_input : nullptr, // dL_dinput
 					use_inference_params, param_gradients_mode // because it overwrites the gradient buffer, so we need to make backup (i.e. dL_ddir)
 				);
@@ -710,7 +738,7 @@ private:
 	std::unique_ptr<tcnn::Network<T>> m_attr_network = nullptr;
 	std::shared_ptr<tcnn::Encoding<T>> m_attr_encoding = nullptr;
 
-	uint32_t m_padded_output_width = 16u;
+	uint32_t m_padded_output_width = 4u;
 	//
 	uint32_t m_shared_length_1 = 16u;
 	uint32_t m_shared_length_2 = 16u;
@@ -728,6 +756,7 @@ private:
 		MatrixT density_network_input{nullptr, 0, 0};
 		MatrixT shared_space{nullptr, 0, 0};
 		MatrixT rgb_network_output{nullptr, 0, 0};
+		MatrixT attr_network_output{nullptr, 0, 0};
 
 		std::unique_ptr<tcnn::Context> density_encoding_ctx = nullptr;
 		std::unique_ptr<tcnn::Context> density_network_ctx = nullptr;
