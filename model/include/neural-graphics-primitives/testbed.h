@@ -374,6 +374,7 @@ public:
 
 	bool m_gui_redraw = true;
 
+	template <uint32_t n_attr_dims>
 	struct Nerf {
 		NerfTracer tracer;
 
@@ -495,7 +496,7 @@ public:
 		uint32_t max_cascade = 0;
 
 		tcnn::GPUMemory<float> vis_input;
-		tcnn::GPUMemory<Eigen::Array4f> vis_rgba;
+		tcnn::GPUMemory<Eigen::Array<float, 4 + n_attr_dims, 1>> vis_rgba;
 
 		ENerfActivation rgb_activation = ENerfActivation::Exponential;
 		ENerfActivation density_activation = ENerfActivation::Exponential;
