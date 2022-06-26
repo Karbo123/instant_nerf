@@ -79,7 +79,8 @@ __global__ void submatrix_op(const uint32_t n_elements,
 
 // a row-wise matrix op launcher
 template <MatrixOperation matrix_operation, typename T_dst, typename T_src=T_dst>
-void submatrix_row_op(const uint32_t n_rows, const uint32_t batch_size, 
+void submatrix_row_op(cudaStream_t stream,
+					  const uint32_t n_rows, const uint32_t batch_size, 
 				      const tcnn::GPUMatrixDynamic<T_dst>& mat_dst, const uint32_t i_start_dst,
 				      const tcnn::GPUMatrixDynamic<T_dst>& mat_src = {nullptr, 0, 0}, const uint32_t i_start_src = 0u,
 				      const T_dst value = T_dst(0)
@@ -138,14 +139,14 @@ public:
 
 		// create rgb network
 		json local_rgb_network_config = rgb_network;
-		local_rgb_network_config["n_input_dims"] = m_shared_length_1 + m_shared_length_2;
+		local_rgb_network_config["n_input_dims"] = m_density_network->padded_output_width() + m_rgb_encoding->padded_output_width();
 		local_rgb_network_config["n_output_dims"] = 3;
 		m_rgb_network.reset(tcnn::create_network<T>(local_rgb_network_config));
 
 		// create attr network
 		if (m_n_attr_dims > 0) {
 			json local_attr_network_config = attr_network;
-			local_attr_network_config["n_input_dims"] = m_shared_length_2 + m_shared_length_3;
+			local_attr_network_config["n_input_dims"] = m_density_network->padded_output_width() + m_attr_encoding->padded_output_width();
 			local_attr_network_config["n_output_dims"] = m_n_attr_dims;
 			m_attr_network.reset(tcnn::create_network<T>(local_attr_network_config));
 		}
@@ -162,89 +163,96 @@ public:
 		auto batch_size = input.n();
 		
 		// allocate workspace
-		auto density_network_input = MatrixT{m_density_encoding->padded_output_width(), batch_size, stream, m_density_encoding->preferred_output_layout()};
-		auto shared_space          = MatrixT{m_shared_length_1 + m_shared_length_2 + m_shared_length_3, batch_size, stream, tcnn::MatrixLayout::RowMajor};
-		auto rgb_network_output    = MatrixT{m_rgb_network->padded_output_width(), batch_size, stream, output.layout()};
-		auto attr_network_output   = MatrixT{m_attr_network->padded_output_width(), batch_size, stream, output.layout()};
-		auto final_network_output  = MatrixT{output.data(), this->padded_output_width(), batch_size, output.layout()}; // rename actually
+		auto temp = TempBuffer(this, batch_size, stream, output.layout() == tcnn::MatrixLayout::ColumnMajor);
 
-		// density
+		// input
+		auto input_pos = input.slice_rows(0, 3u);
+		auto input_dir = input.slice_rows(4u, 3u);
+
+		//-//-//-//-//-//-//-//-//-//-//-//-//-//-//-//-//-//-//-//-//-//-//-//-//-//-
+		// DENSITY
 		m_density_encoding->inference_mixed_precision(stream,
-			input.slice_rows(0, m_density_encoding->input_width()), // pos
-			density_network_input, // temp for positional encoding
+			input_pos,
+			temp.density_network_input,
 			use_inference_params
 		);
-		auto density_network_output = shared_space.slice_rows(m_shared_length_1, m_shared_length_2);
 		m_density_network->inference_mixed_precision(stream, 
-			density_network_input,  // temp for positional encoding
-			density_network_output, // tmp=[rgb, DENSITY, attr]
+			temp.density_network_input,
+			temp.density_network_output,
 			use_inference_params
 		);
 
-		// rgb
-		auto rgb_encoding_out = shared_space.slice_rows(0, m_shared_length_1);
+		//-//-//-//-//-//-//-//-//-//-//-//-//-//-//-//-//-//-//-//-//-//-//-//-//-//-
+		// RGB
+
+		// concatenate with density network output
+		submatrix_row_op<CopyOverwrite, T>(stream,
+			m_density_network->padded_output_width(), batch_size,
+			temp.rgb_network_input, 0u, // to `rgb_network_input`
+			temp.density_network_output
+		);
+
+		// forward
+		auto rgb_encoding_output = temp.rgb_network_input.slice_rows(m_density_network->padded_output_width(), m_rgb_encoding->padded_output_width());
 		m_rgb_encoding->inference_mixed_precision(stream,
-			input.slice_rows(4u, m_rgb_encoding->input_width()), // dir
-			rgb_encoding_out, // tmp=[RGB, DENSITY, attr]
+			input_dir, // dir
+			rgb_encoding_output,
 			use_inference_params
 		);
 		m_rgb_network->inference_mixed_precision(stream, 
-			shared_space.slice_rows(0, m_shared_length_1 + m_shared_length_2), // tmp=[RGB, DENSITY, attr]
-			rgb_network_output,
+			temp.rgb_network_input,
+			temp.rgb_network_output,
 			use_inference_params
 		);
+		
+		//-//-//-//-//-//-//-//-//-//-//-//-//-//-//-//-//-//-//-//-//-//-//-//-//-//-
+		// ATTR
 
-		// if have attribute
 		if (m_n_attr_dims > 0) {
-			// attr
-			auto attr_encoding_out = shared_space.slice_rows(m_shared_length_1 + m_shared_length_2,
-															 m_shared_length_3);
+			// concatenate with density network output
+			submatrix_row_op<CopyOverwrite, T>(stream,
+				m_density_network->padded_output_width(), batch_size,
+				temp.attr_network_input, 0u, // to `attr_network_input`
+				temp.density_network_output
+			);
+
+			// forward
+			auto attr_encoding_output = temp.attr_network_input.slice_rows(m_density_network->padded_output_width(), m_attr_encoding->padded_output_width());
 			m_attr_encoding->inference_mixed_precision(stream,
-				input.slice_rows(4u, m_attr_encoding->input_width()), // dir
-				attr_encoding_out, // tmp=[RGB, DENSITY, ATTR]
+				input_dir, // dir
+				attr_encoding_output, 
 				use_inference_params
 			);
 			m_attr_network->inference_mixed_precision(stream, 
-				shared_space.slice_rows(m_shared_length_1, 
-										m_shared_length_2 + m_shared_length_3), // tmp=[RGB, DENSITY, ATTR], 
-				attr_network_output,
+				temp.attr_network_input,
+				temp.attr_network_output,
 				use_inference_params
 			);
 		}
+		
+		//-//-//-//-//-//-//-//-//-//-//-//-//-//-//-//-//-//-//-//-//-//-//-//-//-//-
+		// gather output
 
-		// copy rgb from `rgb_network_output` to `final_network_output`
-		tcnn::linear_kernel(submatrix_op<CopyOverwrite,T, T>, 0, stream,
-			3u * batch_size,
-			final_network_output.data(), final_network_output.stride(), final_network_output.layout() == tcnn::MatrixLayout::ColumnMajor,
-			0u, 0u, 3u, batch_size, // copy to the first row
-			rgb_network_output.data(), rgb_network_output.stride(), rgb_network_output.layout() == tcnn::MatrixLayout::ColumnMajor,
-			0u, 0u,
-			T(0)
+		submatrix_row_op<CopyOverwrite, T>(stream,
+			3u, batch_size,
+			output, 0u,
+			temp.rgb_network_output // rgb
+		);
+		submatrix_row_op<CopyOverwrite, T>(stream,
+			1u, batch_size,
+			output, 3u,
+			temp.density_network_output // density
+		);
+		submatrix_row_op<CopyOverwrite, T>(stream,
+			m_n_attr_dims, batch_size,
+			output, 4u,
+			temp.attr_network_output // attr
 		);
 
-		// copy density from `shared_space` to `final_network_output`
-		tcnn::linear_kernel(submatrix_op<CopyOverwrite,T, T>, 0, stream,
-			1u * batch_size,
-			final_network_output.data(), final_network_output.stride(), final_network_output.layout() == tcnn::MatrixLayout::ColumnMajor,
-			3u, 0u, 4u, batch_size, // copy to the third row
-			shared_space.data(), shared_space.stride(), shared_space.layout() == tcnn::MatrixLayout::ColumnMajor,
-			m_shared_length_1, 0u,
-			T(0)
-		);
-
-		// copy attr from `attr_network_output` to `final_network_output`
-		tcnn::linear_kernel(submatrix_op<CopyOverwrite,T, T>, 0, stream,
-			m_n_attr_dims * batch_size,
-			final_network_output.data(), final_network_output.stride(), final_network_output.layout() == tcnn::MatrixLayout::ColumnMajor,
-			4u, 0u, 4u + m_n_attr_dims, batch_size, // copy to the fourth row
-			attr_network_output.data(), attr_network_output.stride(), attr_network_output.layout() == tcnn::MatrixLayout::ColumnMajor,
-			0u, 0u,
-			T(0)
-		);
 	}
 
 	uint32_t padded_density_output_width() const {
-		return m_shared_length_2;
+		return m_density_network->padded_output_width();
 	}
 
 	std::unique_ptr<tcnn::Context> forward_impl(
@@ -256,113 +264,102 @@ public:
 	) override {
 		auto batch_size = input.n();
 
-		auto forward = std::make_unique<ForwardContext>();
-		
 		// allocate workspace
-		forward->density_network_input = {m_density_encoding->padded_output_width(), batch_size, stream, m_density_encoding->preferred_output_layout()};
-		forward->shared_space          = {m_shared_length_1 + m_shared_length_2 + m_shared_length_3, batch_size, stream, tcnn::MatrixLayout::RowMajor};
-		if (output) forward->rgb_network_output  = MatrixT{m_rgb_network->padded_output_width(), batch_size, stream, output->layout()};
-		if (output) forward->attr_network_output = MatrixT{m_attr_network->padded_output_width(), batch_size, stream, output->layout()};
-		
-		// if it requires output, final results will be saved to `output->data()`
-		MatrixT final_network_output{nullptr, 0, 0};
-		if (output) {
-			final_network_output = MatrixT{output->data(), this->padded_output_width(), batch_size, output->layout()};
-		}
+		auto ctx = std::make_unique<ForwardContext>(this, batch_size, stream, 
+			output ? output->layout() == tcnn::MatrixLayout::ColumnMajor : true
+		);
 
-		// // // // // // // // // // // // // // // // // // // // // // // // // // // // 
+		// input
+		auto input_pos = input.slice_rows(0, 3u);
+		auto input_dir = input.slice_rows(4u, 3u);
+
+		//-//-//-//-//-//-//-//-//-//-//-//-//-//-//-//-//-//-//-//-//-//-//-//-//-//-
 		// DENSITY
 
-		// encoding position
-		forward->density_encoding_ctx = m_density_encoding->forward(stream,
-			input.slice_rows(0, m_density_encoding->input_width()),
-			&forward->density_network_input,
+		ctx->density_encoding_ctx = m_density_encoding->forward(stream,
+			input_pos,
+			&ctx->density_network_input,
 			use_inference_params, prepare_input_gradients
 		);
-		// density network
-		auto density_network_output = forward->shared_space.slice_rows(m_shared_length_1, m_shared_length_2);
-		forward->density_network_ctx = m_density_network->forward(stream, 
-			forward->density_network_input, 
-			&density_network_output, // tmp=[rgb, DENSITY, attr]
+		
+		ctx->density_network_ctx = m_density_network->forward(stream, 
+			ctx->density_network_input, 
+			&ctx->density_network_output,
 			use_inference_params, prepare_input_gradients
 		);
 
-		// // // // // // // // // // // // // // // // // // // // // // // // // // // // 
+		//-//-//-//-//-//-//-//-//-//-//-//-//-//-//-//-//-//-//-//-//-//-//-//-//-//-
 		// RGB
 
-		// encoding direction for rgb
-		auto rgb_encoding_out = forward->shared_space.slice_rows(0, m_shared_length_1);
-		forward->rgb_encoding_ctx = m_rgb_encoding->forward(stream,
-			input.slice_rows(4u, m_rgb_encoding->input_width()),
-			&rgb_encoding_out, // tmp=[RGB, DENSITY, attr]
+		// concatenate with density network output
+		submatrix_row_op<CopyOverwrite, T>(stream,
+			m_density_network->padded_output_width(), batch_size,
+			ctx->rgb_network_input, 0u, // to `rgb_network_input`
+			ctx->density_network_output
+		);
+
+		// forward
+		auto rgb_encoding_output = ctx->rgb_network_input.slice_rows(m_density_network->padded_output_width(), m_rgb_encoding->padded_output_width());
+		ctx->rgb_encoding_ctx = m_rgb_encoding->forward(stream,
+			input_dir,
+			&rgb_encoding_output,
 			use_inference_params, prepare_input_gradients
 		);
 
-		// rgb network
-		forward->rgb_network_ctx = m_rgb_network->forward(stream, 
-			forward->shared_space.slice_rows(0, m_shared_length_1 + m_shared_length_2), 
-			output ? &forward->rgb_network_output : nullptr, 
+		ctx->rgb_network_ctx = m_rgb_network->forward(stream, 
+			ctx->rgb_network_input, 
+			output ? &ctx->rgb_network_output : nullptr, 
 			use_inference_params, prepare_input_gradients
 		);
 
-		// // // // // // // // // // // // // // // // // // // // // // // // // // // // 
+		//-//-//-//-//-//-//-//-//-//-//-//-//-//-//-//-//-//-//-//-//-//-//-//-//-//-
 		// ATTR
 
-		// if have attribute
 		if (m_n_attr_dims > 0) {
-			// encoding direction for attr
-			auto attr_encoding_out = forward->shared_space.slice_rows(
-					m_shared_length_1 + m_shared_length_2,
-					m_shared_length_3
-			);
-			forward->attr_encoding_ctx = m_attr_encoding->forward(stream,
-				input.slice_rows(4u, m_attr_encoding->input_width()),
-				&attr_encoding_out, // tmp=[RGB, DENSITY, ATTR]
-				use_inference_params, prepare_input_gradients
+
+			// concatenate with density network output
+			submatrix_row_op<CopyOverwrite, T>(stream,
+				m_density_network->padded_output_width(), batch_size,
+				ctx->attr_network_input, 0u, // to `attr_network_input`
+				ctx->density_network_output
 			);
 
-			// attr network
-			forward->attr_network_ctx = m_attr_network->forward(stream, 
-				forward->shared_space.slice_rows(m_shared_length_1,
-										         m_shared_length_2 + m_shared_length_3), 
-				output ? &forward->attr_network_output : nullptr, 
+			// forward
+			auto attr_encoding_output = ctx->attr_network_input.slice_rows(m_density_network->padded_output_width(), m_attr_encoding->padded_output_width());
+			ctx->attr_encoding_ctx = m_attr_encoding->forward(stream,
+				input_dir,
+				&attr_encoding_output,
+				use_inference_params, prepare_input_gradients
+			);
+			ctx->attr_network_ctx = m_attr_network->forward(stream,
+				ctx->attr_network_input, 
+				output ? &ctx->attr_network_output : nullptr, 
 				use_inference_params, prepare_input_gradients
 			);
 		}
+
+		//-//-//-//-//-//-//-//-//-//-//-//-//-//-//-//-//-//-//-//-//-//-//-//-//-//-
+		// gather output
 
 		if (output) {
-			// copy rgb from `rgb_network_output` to `final_network_output`
-			tcnn::linear_kernel(submatrix_op<CopyOverwrite,T, T>, 0, stream,
-				3u * batch_size,
-				final_network_output.data(), final_network_output.stride(), final_network_output.layout() == tcnn::MatrixLayout::ColumnMajor,
-				0u, 0u, 3u, batch_size, // copy to the first row
-				forward->rgb_network_output.data(), forward->rgb_network_output.stride(), forward->rgb_network_output.layout() == tcnn::MatrixLayout::ColumnMajor,
-				0u, 0u,
-				T(0)
+			submatrix_row_op<CopyOverwrite, T>(stream,
+				3u, batch_size,
+				*output, 0u,
+				ctx->rgb_network_output // rgb
 			);
-
-			// copy density from `shared_space` to `final_network_output`
-			tcnn::linear_kernel(submatrix_op<CopyOverwrite,T, T>, 0, stream,
-				1u * batch_size,
-				final_network_output.data(), final_network_output.stride(), final_network_output.layout() == tcnn::MatrixLayout::ColumnMajor,
-				3u, 0u, 4u, batch_size, // copy to the third row
-				forward->shared_space.data(), forward->shared_space.stride(), forward->shared_space.layout() == tcnn::MatrixLayout::ColumnMajor,
-				m_shared_length_1, 0u,
-				T(0)
+			submatrix_row_op<CopyOverwrite, T>(stream,
+				1u, batch_size,
+				*output, 3u,
+				ctx->density_network_output // density
 			);
-
-			// copy attr from `attr_network_output` to `final_network_output`
-			tcnn::linear_kernel(submatrix_op<CopyOverwrite,T, T>, 0, stream,
-				m_n_attr_dims * batch_size,
-				final_network_output.data(), final_network_output.stride(), final_network_output.layout() == tcnn::MatrixLayout::ColumnMajor,
-				4u, 0u, 4u + m_n_attr_dims, batch_size, // copy to the fourth row
-				forward->attr_network_output.data(), forward->attr_network_output.stride(), forward->attr_network_output.layout() == tcnn::MatrixLayout::ColumnMajor,
-				0u, 0u,
-				T(0)
+			submatrix_row_op<CopyOverwrite, T>(stream,
+				m_n_attr_dims, batch_size,
+				*output, 4u,
+				ctx->attr_network_output // attr
 			);
 		}
 
-		return forward;
+		return ctx;
 	}
 
 	void backward_impl(
@@ -378,179 +375,124 @@ public:
 		auto batch_size = input.n();
 
 		// convert to our custom context
-		const auto& forward = dynamic_cast<const ForwardContext&>(ctx);
+		const auto& ctx_forward = dynamic_cast<const ForwardContext&>(ctx);
 
-		// gradient of tmp
-		auto dL_dshared_space = MatrixT{m_shared_length_1 + m_shared_length_2 + m_shared_length_3, batch_size, stream, tcnn::MatrixLayout::RowMajor};
+		// allocate gradient buffer
+		auto temp_grad = TempBuffer(this, batch_size, stream, output.layout() == tcnn::MatrixLayout::ColumnMajor);
+		temp_grad.rgb_attr_network_output_zero_(stream);
 
-		// // // // // // // // // // // // // // // // // // // // // // // // // // // // 
+		// input
+		auto input_pos = input.slice_rows(0, 3u);
+		auto input_dir = input.slice_rows(4u, 3u);
+
+		// input grad
+		MatrixF grad_pos{nullptr, 0, 0}, grad_dir{nullptr, 0, 0};
+		if (dL_dinput) {
+			grad_pos = dL_dinput->slice_rows(0, 3u);
+			grad_dir = dL_dinput->slice_rows(4u, 3u);
+		}
+
+		//-//-//-//-//-//-//-//-//-//-//-//-//-//-//-//-//-//-//-//-//-//-//-//-//-//-
 		// RGB
 
-		// copy rgb gradient to `dL_drgb`
-		auto dL_drgb = MatrixT{m_rgb_network->padded_output_width(), batch_size, stream};
-		CUDA_CHECK_THROW(cudaMemsetAsync(dL_drgb.data(), 0, dL_drgb.n_bytes(), stream)); // have to zero out the padding region
-		tcnn::linear_kernel(submatrix_op<CopyOverwrite, T, T>, 0, stream,
-			3u * batch_size,
-			dL_drgb.data(), dL_drgb.stride(), dL_drgb.layout() == tcnn::MatrixLayout::ColumnMajor,
-			0u, 0u, 3u, batch_size,
-			dL_doutput.data(), dL_doutput.stride(), dL_doutput.layout() == tcnn::MatrixLayout::ColumnMajor,
-			0u, 0u,
-			T(0)
+		// copy rgb gradient
+		submatrix_row_op<CopyOverwrite, T>(stream,
+			3u, batch_size,
+			temp_grad.rgb_network_output, 0u,
+			dL_doutput // rgb
 		);
 
-		// backward rgb network
-		auto dL_drgb_network_input = dL_dshared_space.slice_rows(0, m_shared_length_1 + m_shared_length_2);
-		m_rgb_network->backward(stream, *forward.rgb_network_ctx, 
-			forward.shared_space.slice_rows(0, m_shared_length_1 + m_shared_length_2), // in
-			forward.rgb_network_output, // out (it matters what the padded region is filled)
-			dL_drgb, // dL_doutput (if input is padded, it should be padded with zeros)
-			&dL_drgb_network_input, // dL_dinput
+		// backward
+		m_rgb_network->backward(stream, *ctx_forward.rgb_network_ctx, 
+			ctx_forward.rgb_network_input,  // input
+			ctx_forward.rgb_network_output, // output
+			temp_grad.rgb_network_output, // dL_doutput
+			&temp_grad.rgb_network_input, // dL_dinput
 			use_inference_params, param_gradients_mode
 		);
-
-		// backward rgb encoding
 		if (m_rgb_encoding->n_params() > 0 || dL_dinput) {
-			MatrixF dL_drgb_encoding_input{nullptr, 0, 0};
-			if (dL_dinput) {
-				dL_drgb_encoding_input = dL_dinput->slice_rows(4u, m_rgb_encoding->input_width());
-			}
-
-			m_rgb_encoding->backward(stream, *forward.rgb_encoding_ctx,
-				input.slice_rows(4u, m_rgb_encoding->input_width()), // in
-				forward.shared_space.slice_rows(0, m_shared_length_1), // out
-				dL_dshared_space.slice_rows(0, m_shared_length_1), // dL_doutput
-				dL_dinput ? &dL_drgb_encoding_input : nullptr, // dL_dinput
+			m_rgb_encoding->backward(stream, *ctx_forward.rgb_encoding_ctx,
+				input_dir, // input
+				ctx_forward.rgb_network_input.slice_rows(m_density_network->padded_output_width(), m_rgb_encoding->padded_output_width()), // output
+				temp_grad.rgb_network_input.slice_rows(m_density_network->padded_output_width(), m_rgb_encoding->padded_output_width()),   // dL_doutput
+				dL_dinput ? &grad_dir : nullptr, // dL_dinput (NOTE: directly overwrite to `grad_dir`)
 				use_inference_params, param_gradients_mode
 			);
 		}
 
-		// // // // // // // // // // // // // // // // // // // // // // // // // // // // 
+		//-//-//-//-//-//-//-//-//-//-//-//-//-//-//-//-//-//-//-//-//-//-//-//-//-//-
 		// ATTR
 
 		if (m_n_attr_dims > 0) {
-			// copy attr gradient to `dL_dattr`
-			auto dL_dattr = MatrixT{m_attr_network->padded_output_width(), batch_size, stream};
-			CUDA_CHECK_THROW(cudaMemsetAsync(dL_dattr.data(), 0, dL_dattr.n_bytes(), stream)); // have to zero out the padding region
-			tcnn::linear_kernel(submatrix_op<CopyOverwrite, T, T>, 0, stream,
-				m_n_attr_dims * batch_size,
-				dL_dattr.data(), dL_dattr.stride(), dL_dattr.layout() == tcnn::MatrixLayout::ColumnMajor,
-				0u, 0u, m_n_attr_dims, batch_size,
-				dL_doutput.data(), dL_doutput.stride(), dL_doutput.layout() == tcnn::MatrixLayout::ColumnMajor,
-				4u, 0u,
-				T(0)
+			// copy attr gradient
+			submatrix_row_op<CopyOverwrite, T>(stream,
+				m_n_attr_dims, batch_size,
+				temp_grad.attr_network_output, 0u,
+				dL_doutput, 4u // attr
 			);
 
-			// back up density network gradient from the rgb network former result
-			auto dL_ddensity_network_output = MatrixT{m_shared_length_2, batch_size, stream, dL_dshared_space.layout()};
-			tcnn::linear_kernel(submatrix_op<CopyOverwrite, T, T>, 0, stream,
-				m_shared_length_2 * batch_size,
-				dL_ddensity_network_output.data(), dL_ddensity_network_output.stride(), dL_ddensity_network_output.layout() == tcnn::MatrixLayout::ColumnMajor,
-				0u, 0u, m_shared_length_2, batch_size,
-				dL_dshared_space.data(), dL_dshared_space.stride(), dL_dshared_space.layout() == tcnn::MatrixLayout::ColumnMajor,
-				m_shared_length_1, 0u,
-				T(0)
+			// backward
+			m_attr_network->backward(stream, *ctx_forward.attr_network_ctx, 
+				ctx_forward.attr_network_input,  // input
+				ctx_forward.attr_network_output, // output
+				temp_grad.attr_network_output, // dL_doutput
+				&temp_grad.attr_network_input, // dL_dinput
+				use_inference_params, param_gradients_mode
 			);
-
-			// backward attr network
-			auto dL_dattr_network_input = dL_dshared_space.slice_rows(m_shared_length_1, 
-																	  m_shared_length_2 + m_shared_length_3);
-			m_attr_network->backward(stream, *forward.attr_network_ctx, 
-				forward.shared_space.slice_rows(m_shared_length_1, 
-											    m_shared_length_2 + m_shared_length_3), // in
-				forward.attr_network_output, // out (it matters what the padded region is filled)
-				dL_dattr, // dL_doutput (if input is padded, it should be padded with zeros)
-				&dL_dattr_network_input, // dL_dinput
-				use_inference_params, param_gradients_mode // because it overwrites the gradient buffer, so we need to make backup (i.e. dL_ddensity_first_row)
-			);
-
-			// accumulate density gradient from the rgb network
-			tcnn::linear_kernel(submatrix_op<CopyAccumulate, T, T>, 0, stream,
-				m_shared_length_2 * batch_size,
-				dL_dshared_space.data(), dL_dshared_space.stride(), dL_dshared_space.layout() == tcnn::MatrixLayout::ColumnMajor,
-				m_shared_length_1, 0u, m_shared_length_1 + m_shared_length_2, batch_size,
-				dL_ddensity_network_output.data(), dL_ddensity_network_output.stride(), dL_ddensity_network_output.layout() == tcnn::MatrixLayout::ColumnMajor,
-				0u, 0u,
-				T(0)
-			);
-
-			// backward attr encoding
 			if (m_attr_encoding->n_params() > 0 || dL_dinput) {
-
-				// back up direction gradient from the rgb network
-				auto dL_ddir = MatrixT{3, batch_size, stream, dL_dinput->layout()};
-				tcnn::linear_kernel(submatrix_op<CopyOverwrite, T, float>, 0, stream,
-					3u * batch_size,
-					dL_ddir.data(), dL_ddir.stride(), dL_ddir.layout() == tcnn::MatrixLayout::ColumnMajor,
-					0u, 0u, 3u, batch_size,
-					dL_dinput->data(), dL_dinput->stride(), dL_dinput->layout() == tcnn::MatrixLayout::ColumnMajor,
-					4u, 0u,
-					T(0)
+				auto grad_dir_from_attr_encoding = MatrixF{3, batch_size, stream, dL_dinput->layout()};
+				m_attr_encoding->backward(stream, *ctx_forward.attr_encoding_ctx,
+					input_dir, // input
+					ctx_forward.attr_network_input.slice_rows(m_density_network->padded_output_width(), m_attr_encoding->padded_output_width()), // out
+					temp_grad.attr_network_input.slice_rows(m_density_network->padded_output_width(), m_attr_encoding->padded_output_width()),   // dL_doutput
+					dL_dinput ? &grad_dir_from_attr_encoding : nullptr, // dL_dinput (NOTE: write to `grad_dir_from_attr_encoding` first, then we accumulate it to `grad_dir`)
+					use_inference_params, param_gradients_mode
 				);
-
-				MatrixF dL_dattr_encoding_input{nullptr, 0, 0};
-				if (dL_dinput) {
-					dL_dattr_encoding_input = dL_dinput->slice_rows(4u, m_attr_encoding->input_width());
-				}
-
-				m_attr_encoding->backward(stream, *forward.attr_encoding_ctx,
-					input.slice_rows(4u, m_attr_encoding->input_width()), // in
-					forward.shared_space.slice_rows(m_shared_length_1 + m_shared_length_2, 
-													m_shared_length_3), // out
-					dL_dshared_space.slice_rows(m_shared_length_1 + m_shared_length_2, m_shared_length_3), // dL_doutput
-					dL_dinput ? &dL_dattr_encoding_input : nullptr, // dL_dinput
-					use_inference_params, param_gradients_mode // because it overwrites the gradient buffer, so we need to make backup (i.e. dL_ddir)
-				);
-
-				// accumulate direction gradient from the rgb network
-				tcnn::linear_kernel(submatrix_op<CopyAccumulate, float, T>, 0, stream,
-					3u * batch_size,
-					dL_dinput->data(), dL_dinput->stride(), dL_dinput->layout() == tcnn::MatrixLayout::ColumnMajor,
-					4u, 0u, 7u, batch_size,
-					dL_ddir.data(), dL_ddir.stride(), dL_ddir.layout() == tcnn::MatrixLayout::ColumnMajor,
-					0u, 0u,
-					T(0)
+				// accumulate direction gradient
+				submatrix_row_op<CopyAccumulate, float>(stream,
+					3u, batch_size,
+					grad_dir, 0u,
+					grad_dir_from_attr_encoding
 				);
 			}
 		}
 
-		// // // // // // // // // // // // // // // // // // // // // // // // // // // // 
+		//-//-//-//-//-//-//-//-//-//-//-//-//-//-//-//-//-//-//-//-//-//-//-//-//-//-
 		// DENSITY
 
-		// accumulate density gradient from `dL_doutput` to `dL_dshared_space`
-		tcnn::linear_kernel(submatrix_op<CopyAccumulate, T, T>, 0, stream,
-			batch_size,
-			dL_dshared_space.data(), dL_dshared_space.stride(), dL_dshared_space.layout() == tcnn::MatrixLayout::ColumnMajor,
-			m_shared_length_1, 0u, 1u + m_shared_length_1, batch_size, 
-			dL_doutput.data(), dL_doutput.stride(), dL_doutput.layout() == tcnn::MatrixLayout::ColumnMajor,
-			3u, 0u, // the third row is density gradient
-			T(0)
+		// accumulate density gradient
+		submatrix_row_op<CopyOverwrite, T>(stream,
+			m_density_network->padded_output_width(), batch_size,
+			temp_grad.density_network_output, 0u,
+			temp_grad.rgb_network_input // rgb
 		);
-
-		// backward density network
-		MatrixT dL_ddensity_network_input;
-		if (m_density_encoding->n_params() > 0 || dL_dinput) {
-			dL_ddensity_network_input = MatrixT{m_density_encoding->padded_output_width(), batch_size, stream, m_density_encoding->preferred_output_layout()};
+		submatrix_row_op<CopyAccumulate, T>(stream,
+			1u, batch_size,
+			temp_grad.density_network_output, 0u,
+			dL_doutput, 3u // density
+		);
+		if (m_n_attr_dims > 0) {
+			submatrix_row_op<CopyAccumulate, T>(stream,
+				m_density_network->padded_output_width(), batch_size,
+				temp_grad.density_network_output, 0u,
+				temp_grad.attr_network_input // attr
+			);
 		}
-		m_density_network->backward(stream, *forward.density_network_ctx, 
-			forward.density_network_input, // in
-			forward.shared_space.slice_rows(m_shared_length_1, m_shared_length_2), // out
-			dL_dshared_space.slice_rows(m_shared_length_1, m_shared_length_2), 
-			dL_dinput ? &dL_ddensity_network_input : nullptr, 
+
+		// backward
+		m_density_network->backward(stream, *ctx_forward.density_network_ctx, 
+			ctx_forward.density_network_input,  // input
+			ctx_forward.density_network_output, // output
+			temp_grad.density_network_output,   // dL_doutput
+			(m_density_encoding->n_params() > 0 || dL_dinput) ? &temp_grad.density_network_input : nullptr, // dL_dinput
 			use_inference_params, param_gradients_mode
 		);
-
-		// backward density encoding
-		if (dL_dinput) {
-			MatrixF dL_dpos_encoding_input{nullptr, 0, 0};
-			if (dL_dinput) {
-				dL_dpos_encoding_input = dL_dinput->slice_rows(0, m_density_encoding->input_width());
-			}
-
-			m_density_encoding->backward(stream, *forward.density_encoding_ctx,
-				input.slice_rows(0, m_density_encoding->input_width()),
-				forward.density_network_input,
-				dL_ddensity_network_input,
-				dL_dinput ? &dL_dpos_encoding_input : nullptr,
+		if (m_density_encoding->n_params() > 0 || dL_dinput) {
+			m_density_encoding->backward(stream, *ctx_forward.density_encoding_ctx,
+				input_pos,
+				ctx_forward.density_network_input,
+				temp_grad.density_network_input,
+				dL_dinput ? &grad_pos : nullptr,
 				use_inference_params, param_gradients_mode
 			);
 		}
@@ -570,11 +512,10 @@ public:
 		auto density_network_input = MatrixT{m_density_encoding->padded_output_width(), batch_size, stream, m_density_encoding->preferred_output_layout()};
 
 		m_density_encoding->inference_mixed_precision(stream,
-			input.slice_rows(0, m_density_encoding->input_width()),
+			input.slice_rows(0, 3), // pos
 			density_network_input,
 			use_inference_params
 		);
-
 		m_density_network->inference_mixed_precision(stream, 
 			density_network_input, 
 			output, 
@@ -640,7 +581,7 @@ public:
 	}
 
 	uint32_t padded_output_width() const override {
-		return 4 + m_n_attr_dims;
+		return 4u + m_n_attr_dims;
 	}
 
 	uint32_t input_width() const override {
@@ -704,7 +645,7 @@ public:
 
 	tcnn::json hyperparams() const override {
 		json density_network_hyperparams = m_density_network->hyperparams();
-		density_network_hyperparams["n_output_dims"] = m_shared_length_2;
+		density_network_hyperparams["n_output_dims"] = m_density_network->padded_output_width();
 		return {
 			{"otype", "NerfNetwork"},
 			{"density_encoding", m_density_encoding->hyperparams()},
@@ -730,7 +671,7 @@ private:
 	// dims of attr
 	uint32_t m_n_attr_dims = 0u;
 
-	// necessaries to compute gradient
+	// necessaries to compute results
 	struct TempBuffer {
 		// density
 		MatrixT density_network_input{nullptr, 0, 0};
@@ -741,6 +682,31 @@ private:
 		// attr
 		MatrixT attr_network_input{nullptr, 0, 0};
 		MatrixT attr_network_output{nullptr, 0, 0};
+		TempBuffer(NerfNetwork<T>* nerf_network, uint32_t batch_size, cudaStream_t stream, bool output_cm=true) {
+			// density
+			density_network_input  = MatrixT{nerf_network->m_density_encoding->padded_output_width(), batch_size, 
+									         stream, nerf_network->m_density_encoding->preferred_output_layout()};
+			density_network_output = MatrixT{nerf_network->m_density_network->padded_output_width(), batch_size,
+									         stream, output_cm ? tcnn::MatrixLayout::ColumnMajor : tcnn::MatrixLayout::RowMajor};
+			// rgb
+			rgb_network_input      = MatrixT{nerf_network->m_density_network->padded_output_width() + nerf_network->m_rgb_encoding->padded_output_width(), batch_size,
+									         stream, nerf_network->m_rgb_encoding->preferred_output_layout()};
+			rgb_network_output     = MatrixT{nerf_network->m_rgb_network->padded_output_width(), batch_size,
+									         stream, output_cm ? tcnn::MatrixLayout::ColumnMajor : tcnn::MatrixLayout::RowMajor};
+			// attr
+			if (nerf_network->n_attr_dims() > 0) {
+				attr_network_input  = MatrixT{nerf_network->m_density_network->padded_output_width() + nerf_network->m_attr_encoding->padded_output_width(), batch_size,
+									          stream, nerf_network->m_attr_encoding->preferred_output_layout()};
+				attr_network_output = MatrixT{nerf_network->m_attr_network->padded_output_width(), batch_size,
+									          stream, output_cm ? tcnn::MatrixLayout::ColumnMajor : tcnn::MatrixLayout::RowMajor};
+			}
+		}
+		void rgb_attr_network_output_zero_(cudaStream_t stream) { // zero out all the elements
+			CUDA_CHECK_THROW(cudaMemsetAsync(rgb_network_output.data(), 0, rgb_network_output.n_bytes(), stream));
+			if (attr_network_output.data()) {	
+				CUDA_CHECK_THROW(cudaMemsetAsync(attr_network_output.data(), 0, attr_network_output.n_bytes(), stream));
+			}
+		}
 	};
 	struct ForwardContext : public tcnn::Context, public TempBuffer {
 		// density
@@ -752,6 +718,8 @@ private:
 		// attr
 		std::unique_ptr<tcnn::Context> attr_network_ctx = nullptr;
 		std::unique_ptr<tcnn::Context> attr_encoding_ctx = nullptr;
+		// init
+		using TempBuffer::TempBuffer;
 	};
 };
 

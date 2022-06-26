@@ -6,7 +6,7 @@ modification is based on [instant-ngp d9e9bff](https://github.com/NVlabs/instant
 
 **Work in Progress**
 
-# What's Changed Compared to the Official Implementation?
+# What has been Removed Compared to the Official Implementation?
 
 **Only Support/Allow:**
 - only NeRF (intentionally remove other primitives)
@@ -26,4 +26,9 @@ git submodule update --init --recursive
 ln -s `pwd`/third_party/instant-ngp/dependencies `pwd`/model
 cd model && source build.sh
 ```
+
+# What is New?
+
+## New Network Architecture
+It may look like this: ![Network Architecture](media/nerf_network.jpg)
 

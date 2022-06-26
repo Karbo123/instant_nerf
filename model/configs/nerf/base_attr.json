@@ -73,7 +73,7 @@
 	},
 	"attr_network": {
 		"otype": "FullyFusedMLP",
-		"n_attr": 4,
+		"n_attr": 0,
 		"activation": "ReLU",
 		"output_activation": "None",
 		"n_neurons": 64,
