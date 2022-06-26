@@ -1,17 +1,13 @@
-/*
- * Copyright (c) 2021-2022, NVIDIA CORPORATION.  All rights reserved.
- *
- * NVIDIA CORPORATION and its licensors retain all intellectual property
- * and proprietary rights in and to this software, related documentation
- * and any modifications thereto.  Any use, reproduction, disclosure or
- * distribution of this software and related documentation without an express
- * license agreement from NVIDIA CORPORATION is strictly prohibited.
- */
-
-/** @file   nerf_network.h
- *  @author Thomas Müller, NVIDIA
- *  @brief  A network that first processes 3D position to density and
- *          subsequently direction to color.
+/* This Network Implementation Has:
+ *	- 3 MLPs:
+ *	  - density network: to encode positional embedding, as well as density prediction
+ *	  - rgb network: to get rgb prediction
+ *	  - attr network: to get attribute prediction
+ *	
+ *	- 3 encoding modules
+ *	  - density encoding: to encode positional embedding via hash encoder
+ *	  - rgb encoding: to encode direction, it can be disabled by passing Identity module with scale=0
+ *	  - attr encoding: to encode direction, it can be disabled by passing Identity module with scale=0
  */
 
 #pragma once
@@ -21,12 +17,11 @@
 #include <tiny-cuda-nn/encoding.h>
 #include <tiny-cuda-nn/gpu_matrix.h>
 #include <tiny-cuda-nn/gpu_memory.h>
-#include <tiny-cuda-nn/multi_stream.h>
 #include <tiny-cuda-nn/network.h>
 
-#include <tiny-cuda-nn/network_with_input_encoding.h>
-
 NGP_NAMESPACE_BEGIN
+
+//=//=//=//=//=//=//=//=//=//=//=//=//=//=//=//=//=//=//=//=//=//=//=//=//=//=//=//=//=//=//=//=//=//=//=//=
 
 enum MatrixOperation { 
 	CopyOverwrite,  // copy the src and overwrite to the dst
@@ -34,7 +29,7 @@ enum MatrixOperation {
 	AssignConstant  // assign constant value to the dst
 };
 
-// fused matrix operation kernel
+// universal matrix operation kernel
 template <MatrixOperation matrix_operation=CopyOverwrite, typename T_dst, typename T_src>
 __global__ void submatrix_op(const uint32_t n_elements,
 							 // dst
@@ -82,6 +77,23 @@ __global__ void submatrix_op(const uint32_t n_elements,
 	}
 }
 
+// a row-wise matrix op launcher
+template <MatrixOperation matrix_operation, typename T_dst, typename T_src=T_dst>
+void submatrix_row_op(const uint32_t n_rows, const uint32_t batch_size, 
+				      const tcnn::GPUMatrixDynamic<T_dst>& mat_dst, const uint32_t i_start_dst,
+				      const tcnn::GPUMatrixDynamic<T_dst>& mat_src = {nullptr, 0, 0}, const uint32_t i_start_src = 0u,
+				      const T_dst value = T_dst(0)
+) {
+	tcnn::linear_kernel(submatrix_op<matrix_operation, T_dst, T_src>, 0, stream,
+		n_rows * batch_size,
+		mat_dst.data(), mat_dst.stride(), mat_dst.layout() == tcnn::MatrixLayout::ColumnMajor,
+		i_start_dst, 0u, i_start_dst + n_rows, batch_size,
+		mat_src.data(), mat_src.stride(), mat_src.layout() == tcnn::MatrixLayout::ColumnMajor,
+		i_start_src, 0u,
+		value
+	);
+}
+
 //=//=//=//=//=//=//=//=//=//=//=//=//=//=//=//=//=//=//=//=//=//=//=//=//=//=//=//=//=//=//=//=//=//=//=//=
 
 template <typename T>
@@ -92,23 +104,11 @@ public:
 	using MatrixF = tcnn::GPUMatrixDynamic<float>;
 
 	NerfNetwork(const json& rgb_encoding, const json& density_encoding, const json& attr_encoding,
-				const json& rgb_network,  const json& density_network,  const json& attr_network ) {
-		// Network Architecture (example):
-		//
-		//                               dir(3) ==[rgb_encoding]==> 16 
-		//                                                           > 16+16=32 ==[rgb_network]==> rgb(3 of 16)
-		// pos(3) ==[density_encoding]==> 32 ==[density_network]==> 16
-		//                                                           > 16+16=32 ==[attr_network]==> attr(? of 16)
-		//                              dir(3) ==[attr_encoding]==> 16
-		// 
-		// = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = 
-		// Output Feature: [rgb(3), density(1), attr(?)]
+				const json& rgb_network,  const json& density_network,  const json& attr_network 
+	) {
 		
-		// some values
-		m_n_pos_dims = 3u; // position
-		m_n_dir_dims = 3u; // direction
-		m_dir_offset = 4u; // there are four elemnets ahead, i.e. pos(3) + dt(1)
-		m_n_attr_dims = attr_network.value("n_attr", 0u); // attribute
+		// dims of attribute
+		m_n_attr_dims = attr_network.value("n_attr", 0u);
 		
 		// calculate alignment
 		auto density_alignment = density_network.contains("otype") && (
@@ -121,32 +121,20 @@ public:
 			// same alignments will make it easy to deal with
 			throw std::runtime_error("Expected all alignments must be the same");
 		}
-		m_alignment = rgb_alignment;
+		const uint32_t alignment = rgb_alignment;
 		
-		// create positional encoding
-		m_density_encoding.reset(tcnn::create_encoding<T>(m_n_pos_dims, density_encoding, m_alignment));
-		
-		// create directional encoding
-		m_rgb_encoding.reset(tcnn::create_encoding<T>(m_n_dir_dims, rgb_encoding, m_alignment));
-
-		// create attribute encoding
+		// create encoding modules
+		m_density_encoding.reset(tcnn::create_encoding<T>(3u, density_encoding, alignment));
+		m_rgb_encoding.reset(tcnn::create_encoding<T>(3u, rgb_encoding, alignment));
 		if (m_n_attr_dims > 0) {
-			m_attr_encoding.reset(tcnn::create_encoding<T>(m_n_dir_dims, attr_encoding, m_alignment));
+			m_attr_encoding.reset(tcnn::create_encoding<T>(3u, attr_encoding, alignment));
 		}
-
-		// calculate final output dims
-		m_padded_output_width = 4u + m_n_attr_dims;
 
 		// create density network
 		json local_density_network_config = density_network;
 		local_density_network_config["n_input_dims"] = m_density_encoding->padded_output_width();
 		local_density_network_config["n_output_dims"] = density_network.value("n_output_dims", 16);
 		m_density_network.reset(tcnn::create_network<T>(local_density_network_config));
-
-		// shared space component's length
-		m_shared_length_1 = m_rgb_encoding->padded_output_width();
-		m_shared_length_2 = m_density_network->padded_output_width();
-		m_shared_length_3 = (m_n_attr_dims > 0) ? m_attr_encoding->padded_output_width() : 0u;
 
 		// create rgb network
 		json local_rgb_network_config = rgb_network;
@@ -196,7 +184,7 @@ public:
 		// rgb
 		auto rgb_encoding_out = shared_space.slice_rows(0, m_shared_length_1);
 		m_rgb_encoding->inference_mixed_precision(stream,
-			input.slice_rows(m_dir_offset, m_rgb_encoding->input_width()), // dir
+			input.slice_rows(4u, m_rgb_encoding->input_width()), // dir
 			rgb_encoding_out, // tmp=[RGB, DENSITY, attr]
 			use_inference_params
 		);
@@ -212,7 +200,7 @@ public:
 			auto attr_encoding_out = shared_space.slice_rows(m_shared_length_1 + m_shared_length_2,
 															 m_shared_length_3);
 			m_attr_encoding->inference_mixed_precision(stream,
-				input.slice_rows(m_dir_offset, m_attr_encoding->input_width()), // dir
+				input.slice_rows(4u, m_attr_encoding->input_width()), // dir
 				attr_encoding_out, // tmp=[RGB, DENSITY, ATTR]
 				use_inference_params
 			);
@@ -305,7 +293,7 @@ public:
 		// encoding direction for rgb
 		auto rgb_encoding_out = forward->shared_space.slice_rows(0, m_shared_length_1);
 		forward->rgb_encoding_ctx = m_rgb_encoding->forward(stream,
-			input.slice_rows(m_dir_offset, m_rgb_encoding->input_width()),
+			input.slice_rows(4u, m_rgb_encoding->input_width()),
 			&rgb_encoding_out, // tmp=[RGB, DENSITY, attr]
 			use_inference_params, prepare_input_gradients
 		);
@@ -328,7 +316,7 @@ public:
 					m_shared_length_3
 			);
 			forward->attr_encoding_ctx = m_attr_encoding->forward(stream,
-				input.slice_rows(m_dir_offset, m_attr_encoding->input_width()),
+				input.slice_rows(4u, m_attr_encoding->input_width()),
 				&attr_encoding_out, // tmp=[RGB, DENSITY, ATTR]
 				use_inference_params, prepare_input_gradients
 			);
@@ -424,11 +412,11 @@ public:
 		if (m_rgb_encoding->n_params() > 0 || dL_dinput) {
 			MatrixF dL_drgb_encoding_input{nullptr, 0, 0};
 			if (dL_dinput) {
-				dL_drgb_encoding_input = dL_dinput->slice_rows(m_dir_offset, m_rgb_encoding->input_width());
+				dL_drgb_encoding_input = dL_dinput->slice_rows(4u, m_rgb_encoding->input_width());
 			}
 
 			m_rgb_encoding->backward(stream, *forward.rgb_encoding_ctx,
-				input.slice_rows(m_dir_offset, m_rgb_encoding->input_width()), // in
+				input.slice_rows(4u, m_rgb_encoding->input_width()), // in
 				forward.shared_space.slice_rows(0, m_shared_length_1), // out
 				dL_dshared_space.slice_rows(0, m_shared_length_1), // dL_doutput
 				dL_dinput ? &dL_drgb_encoding_input : nullptr, // dL_dinput
@@ -501,11 +489,11 @@ public:
 
 				MatrixF dL_dattr_encoding_input{nullptr, 0, 0};
 				if (dL_dinput) {
-					dL_dattr_encoding_input = dL_dinput->slice_rows(m_dir_offset, m_attr_encoding->input_width());
+					dL_dattr_encoding_input = dL_dinput->slice_rows(4u, m_attr_encoding->input_width());
 				}
 
 				m_attr_encoding->backward(stream, *forward.attr_encoding_ctx,
-					input.slice_rows(m_dir_offset, m_attr_encoding->input_width()), // in
+					input.slice_rows(4u, m_attr_encoding->input_width()), // in
 					forward.shared_space.slice_rows(m_shared_length_1 + m_shared_length_2, 
 													m_shared_length_3), // out
 					dL_dshared_space.slice_rows(m_shared_length_1 + m_shared_length_2, m_shared_length_3), // dL_doutput
@@ -652,7 +640,7 @@ public:
 	}
 
 	uint32_t padded_output_width() const override {
-		return m_padded_output_width;
+		return 4 + m_n_attr_dims;
 	}
 
 	uint32_t input_width() const override {
@@ -729,43 +717,41 @@ public:
 	}
 
 private:
+	// density
 	std::unique_ptr<tcnn::Network<T>> m_density_network = nullptr;
 	std::shared_ptr<tcnn::Encoding<T>> m_density_encoding = nullptr;
-	//
+	// rgb
 	std::unique_ptr<tcnn::Network<T>> m_rgb_network = nullptr;
 	std::shared_ptr<tcnn::Encoding<T>> m_rgb_encoding = nullptr;
-	//
+	// attr
 	std::unique_ptr<tcnn::Network<T>> m_attr_network = nullptr;
 	std::shared_ptr<tcnn::Encoding<T>> m_attr_encoding = nullptr;
 
-	uint32_t m_padded_output_width = 4u;
-	//
-	uint32_t m_shared_length_1 = 16u;
-	uint32_t m_shared_length_2 = 16u;
-	uint32_t m_shared_length_3 = 0u;
-	//
-	uint32_t m_n_pos_dims = 3u;
-	uint32_t m_n_dir_dims = 3u;
-	uint32_t m_dir_offset = 4u;
+	// dims of attr
 	uint32_t m_n_attr_dims = 0u;
-	// 
-	uint32_t m_alignment = 16u;
 
-	// // Storage of forward pass data
-	struct ForwardContext : public tcnn::Context {
+	// necessaries to compute gradient
+	struct TempBuffer {
+		// density
 		MatrixT density_network_input{nullptr, 0, 0};
-		MatrixT shared_space{nullptr, 0, 0};
+		MatrixT density_network_output{nullptr, 0, 0};
+		// rgb
+		MatrixT rgb_network_input{nullptr, 0, 0};
 		MatrixT rgb_network_output{nullptr, 0, 0};
+		// attr
+		MatrixT attr_network_input{nullptr, 0, 0};
 		MatrixT attr_network_output{nullptr, 0, 0};
-
-		std::unique_ptr<tcnn::Context> density_encoding_ctx = nullptr;
+	};
+	struct ForwardContext : public tcnn::Context, public TempBuffer {
+		// density
 		std::unique_ptr<tcnn::Context> density_network_ctx = nullptr;
-		//
-		std::unique_ptr<tcnn::Context> rgb_encoding_ctx = nullptr;
+		std::unique_ptr<tcnn::Context> density_encoding_ctx = nullptr;
+		// rgb
 		std::unique_ptr<tcnn::Context> rgb_network_ctx = nullptr;
-		//
-		std::unique_ptr<tcnn::Context> attr_encoding_ctx = nullptr;
+		std::unique_ptr<tcnn::Context> rgb_encoding_ctx = nullptr;
+		// attr
 		std::unique_ptr<tcnn::Context> attr_network_ctx = nullptr;
+		std::unique_ptr<tcnn::Context> attr_encoding_ctx = nullptr;
 	};
 };
 
