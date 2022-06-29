@@ -172,7 +172,17 @@ bool ends_with(const std::string& str, const std::string& suffix) {
 	return str.size() >= suffix.size() && 0 == str.compare(str.size()-suffix.size(), suffix.size(), suffix);
 }
 
-NerfDataset create_empty_nerf_dataset(size_t n_images, int aabb_scale, bool is_hdr, bool train_envmap, Eigen::Vector2i envmap_resolution) {
+__global__ void memset_0001(uint32_t num_elements, float* __restrict__ dst) {
+	const uint32_t i = threadIdx.x + blockIdx.x * blockDim.x;
+	if (i >= num_elements) return;
+
+	dst[4u * i + 0u] = 0.0f; // red (black color)
+	dst[4u * i + 1u] = 0.0f; // green (black color)
+	dst[4u * i + 2u] = 0.0f; // blue (black color)
+	dst[4u * i + 3u] = 1.0f; // alpha
+}
+
+NerfDataset create_empty_nerf_dataset(size_t n_images, int aabb_scale, bool is_hdr, Eigen::Vector2i envmap_resolution) {
 	NerfDataset result{};
 	result.n_images = n_images;
 	result.sharpness_resolution = { 128, 72 };
@@ -190,14 +200,13 @@ NerfDataset create_empty_nerf_dataset(size_t n_images, int aabb_scale, bool is_h
 		result.xforms[i].start = Eigen::Matrix<float, 3, 4>::Identity();
 		result.xforms[i].end = Eigen::Matrix<float, 3, 4>::Identity();
 	}
-	if (train_envmap) {
-		if (envmap_resolution.isZero()) {
-			envmap_resolution = {100, 100};
-			tlog::info() << "Found zero envmap_resolution, but we set it to resolution of 100x100";
-		}
+	if (!envmap_resolution.isZero()) {
 		result.envmap_resolution = envmap_resolution;
 		result.envmap_data = GPUMemory<float>(envmap_resolution.x() * envmap_resolution.y() * 4);
-		result.envmap_data.memset(0.0f);
+		linear_kernel(memset_0001, 0, nullptr, 
+					  envmap_resolution.x() * envmap_resolution.y(),
+					  result.envmap_data.data()
+		);
 	}
 	return result;
 }

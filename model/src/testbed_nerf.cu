@@ -2551,11 +2551,15 @@ void Testbed::Nerf::Training::update_transforms(int first, int last) {
 	CUDA_CHECK_THROW(cudaMemcpy(transforms_gpu.data() + first, transforms.data() + first, n * sizeof(TrainingXForm), cudaMemcpyHostToDevice));
 }
 
-void Testbed::create_empty_nerf_dataset(size_t n_images, int aabb_scale, bool is_hdr) {
-	m_nerf.training.dataset = ngp::create_empty_nerf_dataset(n_images, aabb_scale, is_hdr, m_nerf.training.train_envmap, m_envmap.resolution);
+void Testbed::create_empty_nerf_dataset(size_t n_images, int aabb_scale, bool is_hdr, Eigen::Vector2i envmap_resolution) {
+	m_nerf.training.dataset = ngp::create_empty_nerf_dataset(n_images, aabb_scale, is_hdr, envmap_resolution);
 	load_nerf();
 	m_nerf.training.n_images_for_training = 0;
 	m_training_data_available = true;
+	m_nerf.training.train_envmap = !envmap_resolution.isZero();
+	if (m_nerf.training.train_envmap) {
+		tlog::info() << "Train with learnable envmap of size = (" << envmap_resolution.x() << ", " << envmap_resolution.y() << ")";
+	}
 }
 
 void Testbed::load_nerf() {

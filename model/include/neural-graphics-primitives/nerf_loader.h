@@ -160,6 +160,6 @@ struct NerfDataset {
 };
 
 NerfDataset load_nerf(const std::vector<filesystem::path>& jsonpaths, float sharpen_amount = 0.f);
-NerfDataset create_empty_nerf_dataset(size_t n_images, int aabb_scale = 1, bool is_hdr = false, bool train_envmap = false, Eigen::Vector2i envmap_resolution = {0, 0});
+NerfDataset create_empty_nerf_dataset(size_t n_images, int aabb_scale = 1, bool is_hdr = false, Eigen::Vector2i envmap_resolution = Eigen::Vector2i::Zero());
 
 NGP_NAMESPACE_END
