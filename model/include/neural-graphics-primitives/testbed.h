@@ -203,7 +203,7 @@ public:
 	}
 	static ELossType string_to_loss_type(const std::string& str);
 	void reset_network();
-	void create_empty_nerf_dataset(size_t n_images, int aabb_scale = 1, bool is_hdr = false);
+	void create_empty_nerf_dataset(size_t n_images, int aabb_scale = 1, bool is_hdr = false, Eigen::Vector2i envmap_resolution = Eigen::Vector2i::Zero());
 	void load_nerf();
 	void set_exposure(float exposure) { m_exposure = exposure; }
 	void set_max_level(float maxlevel);
@@ -616,7 +616,7 @@ public:
 		std::shared_ptr<TrainableBuffer<4, 2, float>> envmap;
 		std::shared_ptr<tcnn::Trainer<float, float, float>> trainer;
 
-		Eigen::Vector2i resolution;
+		Eigen::Vector2i resolution = Eigen::Vector2i::Zero();
 		ELossType loss_type;
 	} m_envmap;
 

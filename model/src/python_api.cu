@@ -233,7 +233,7 @@ PYBIND11_MODULE(pyngp, m) {
 		.def(py::init<ETestbedMode>())
 		.def(py::init<ETestbedMode, const std::string&, const std::string&>())
 		.def(py::init<ETestbedMode, const std::string&, const json&>())
-		.def("create_empty_nerf_dataset", &Testbed::create_empty_nerf_dataset, "Allocate memory for a nerf dataset with a given size", py::arg("n_images"), py::arg("aabb_scale")=1, py::arg("is_hdr")=false)
+		.def("create_empty_nerf_dataset", &Testbed::create_empty_nerf_dataset, "Allocate memory for a nerf dataset with a given size", py::arg("n_images"), py::arg("aabb_scale")=1, py::arg("is_hdr")=false, py::arg("envmap_resolution")=Eigen::Vector2i::Zero())
 		.def("load_training_data", &Testbed::load_training_data, py::call_guard<py::gil_scoped_release>(), "Load training data from a given path.")
 		.def("clear_training_data", &Testbed::clear_training_data, "Clears training data to free up GPU memory.")
 		// General control
@@ -399,6 +399,7 @@ PYBIND11_MODULE(pyngp, m) {
 		.def_readwrite("linear_colors", &Testbed::Nerf::Training::linear_colors)
 		.def_readwrite("loss_type", &Testbed::Nerf::Training::loss_type)
 		.def_readwrite("snap_to_pixel_centers", &Testbed::Nerf::Training::snap_to_pixel_centers)
+		.def_readwrite("train_envmap", &Testbed::Nerf::Training::train_envmap)
 		.def_readwrite("optimize_extrinsics", &Testbed::Nerf::Training::optimize_extrinsics)
 		.def_readwrite("optimize_extra_dims", &Testbed::Nerf::Training::optimize_extra_dims)
 		.def_readwrite("optimize_exposure", &Testbed::Nerf::Training::optimize_exposure)
