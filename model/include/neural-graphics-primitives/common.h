@@ -94,6 +94,11 @@ enum class ELossType : int {
 };
 static constexpr const char* LossTypeStr = "L2\0L1\0MAPE\0SMAPE\0Huber\0LogL1\0RelativeL2\0\0";
 
+enum class EDensifyLossType : int {
+	LowDensity,                       // #1 ==> density must be low
+	LowDensityAndSimilarNeighborhood, // #2 ==> nearby region must be similar, density must be low
+};
+
 enum class ENerfActivation : int {
 	None,
 	ReLU,
