@@ -445,6 +445,7 @@ public:
 			bool random_bg_color = true;
 			bool linear_colors = false;
 			ELossType loss_type = ELossType::L2;
+			EDensifyLossType densify_loss_type = EDensifyLossType::LowDensity;
 			bool snap_to_pixel_centers = true;
 			bool train_envmap = false;
 
@@ -470,6 +471,7 @@ public:
 			int view = 0;
 
 			float depth_supervision_lambda = 0.f;
+			float densify_lambda = 0.f;
 
 			tcnn::GPUMemory<float> sharpness_grid;
 

@@ -182,6 +182,11 @@ PYBIND11_MODULE(pyngp, m) {
 		.value("RelativeL2", ELossType::RelativeL2)
 		.export_values();
 
+	py::enum_<EDensifyLossType>(m, "DensifyLossType")
+		.value("LowDensity", EDensifyLossType::LowDensity)
+		.value("LowDensityAndSimilarNeighborhood", EDensifyLossType::LowDensityAndSimilarNeighborhood)
+		.export_values();
+
 	py::enum_<ENerfActivation>(m, "NerfActivation")
 		.value("None", ENerfActivation::None)
 		.value("ReLU", ENerfActivation::ReLU)
@@ -398,6 +403,7 @@ PYBIND11_MODULE(pyngp, m) {
 		.def_readwrite("n_images_for_training", &Testbed::Nerf::Training::n_images_for_training)
 		.def_readwrite("linear_colors", &Testbed::Nerf::Training::linear_colors)
 		.def_readwrite("loss_type", &Testbed::Nerf::Training::loss_type)
+		.def_readwrite("densify_loss_type", &Testbed::Nerf::Training::densify_loss_type)
 		.def_readwrite("snap_to_pixel_centers", &Testbed::Nerf::Training::snap_to_pixel_centers)
 		.def_readwrite("train_envmap", &Testbed::Nerf::Training::train_envmap)
 		.def_readwrite("optimize_extrinsics", &Testbed::Nerf::Training::optimize_extrinsics)
@@ -417,6 +423,7 @@ PYBIND11_MODULE(pyngp, m) {
 		.def_readwrite("intrinsic_l2_reg", &Testbed::Nerf::Training::intrinsic_l2_reg)
 		.def_readwrite("exposure_l2_reg", &Testbed::Nerf::Training::exposure_l2_reg)
 		.def_readwrite("depth_supervision_lambda", &Testbed::Nerf::Training::depth_supervision_lambda)
+		.def_readwrite("densify_lambda", &Testbed::Nerf::Training::densify_lambda)
 		.def_readonly("dataset", &Testbed::Nerf::Training::dataset)
 		.def("set_camera_intrinsics", &Testbed::Nerf::Training::set_camera_intrinsics,
 			py::arg("frame_idx"),

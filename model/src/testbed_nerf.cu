@@ -1287,6 +1287,8 @@ __global__ void compute_loss_kernel_train_nerf(
 	const Eigen::Array3f* __restrict__ exposure,
 	Eigen::Array3f* __restrict__ exposure_gradient,
 	float depth_supervision_lambda,
+	float densify_lambda,
+	EDensifyLossType densify_loss_type,
 	float near_distance
 ) {
 	// the ray index (fake, only to index coord/network_output data)
@@ -1579,7 +1581,94 @@ __global__ void compute_loss_kernel_train_nerf(
 			// encourage smaller density value if it occludes the camera
 			(float(local_network_output[3]) > -10.0f && depth < near_distance ? 1e-4f : 0.0f);
 			;
-
+		
+		// try to densify unnecessary volume
+		float densify_item = 0.f;
+		switch (densify_loss_type) {
+			case EDensifyLossType::LowDensity: // density must be low
+				densify_item = 1.f;
+				break;
+			case EDensifyLossType::LowDensityAndSimilarNeighborhood: // nearby region must be similar, density must be low
+				constexpr int32_t num_neighbors = 7; // radius of neighbors, odd numbers
+				constexpr float expected_magnitude = 0.324f;
+				// prepare
+				float sum_dt[num_neighbors];
+				float w_dist[num_neighbors];
+				float local_density[num_neighbors];
+				constexpr int32_t middle_index = num_neighbors / 2;
+				using TCNNVec4 = tcnn::vector_t<tcnn::network_precision_t, 4>;
+				// re-compute neighbors' info
+				#pragma unroll
+				for (int32_t k = 0; k < num_neighbors; ++k) { // 0, 1, 2, 3, 4, 5, 6
+					int32_t index = int32_t(j) + (k - middle_index); // j + (-3, -2, -1, 0, 1, 2, 3)
+					index = max(index, 0);
+					index = min(index, compacted_numsteps - 1);
+					const NerfCoordinate* coord_in = coords_in(index);
+					// read
+					const float dt = unwarp_dt(coord_in->dt);
+					if (k == 0) sum_dt[0] = dt;
+					else sum_dt[k] = sum_dt[k - 1] + dt;
+					// store density
+					const TCNNVec4 local_network_output = *(TCNNVec4*)(network_output + int32_t(padded_output_width) * (index - int32_t(j)));
+					const float density = network_to_density(float(local_network_output[3]), density_activation);
+					local_density[k] = density;
+				}
+				// compute softmax weight
+				{
+					// compute ray distance
+					float sum_dt_middle = sum_dt[middle_index];
+					#pragma unroll
+					for (int32_t k = 0; k < num_neighbors; ++k) {
+						w_dist[k] = fabsf(sum_dt[k] - sum_dt_middle); // to distance
+					}
+					// compute average distance
+					float distance_avg = 0.f;
+					#pragma unroll
+					for (int32_t k = 0; k < num_neighbors; ++k) {
+						distance_avg += w_dist[k];
+					}
+					distance_avg /= float(num_neighbors);
+					// to softmax input
+					float to_softmax = (-1.f) / distance_avg;
+					#pragma unroll
+					for (int32_t k = 0; k < num_neighbors; ++k) {
+						w_dist[k] *= to_softmax;
+					}
+					// find max elem
+					float max_elem = w_dist[0];
+					#pragma unroll
+					for (int32_t k = 1; k < num_neighbors; ++k) {
+						max_elem = max(max_elem, w_dist[k]);
+					}
+					// compute exp entry
+					#pragma unroll
+					for (int32_t k = 0; k < num_neighbors; ++k) {
+						w_dist[k] = __expf(w_dist[k] - max_elem);
+					}
+					// compute softmax deno
+					float exp_sum = 0.f;
+					#pragma unroll
+					for (int32_t k = 0; k < num_neighbors; ++k) {
+						exp_sum += w_dist[k];
+					}
+					// compute softmax output
+					#pragma unroll
+					for (int32_t k = 0; k < num_neighbors; ++k) {
+						w_dist[k] /= exp_sum;
+					}
+				}
+				auto sign_fn = [&](int32_t k) { // when k == middle_index, sign is +1.0f, minimizing the value
+					return (local_density[k] > local_density[middle_index]) ? (-1.f) : (1.f);
+				};
+				#pragma unroll
+				for (int32_t k = 0; k < num_neighbors; ++k) { // compute
+					densify_item += w_dist[k] * sign_fn(k);
+				}
+				densify_item /= expected_magnitude; // make sure the magnitude is similar
+				break;
+		}
+		local_dL_doutput[3] += loss_scale * densify_lambda * densify_item * density_derivative;
+		
 		// write gradient (from loss to the network's output layer)
 		*(tcnn::vector_t<tcnn::network_precision_t, 4>*)dloss_doutput = local_dL_doutput;
 
@@ -3257,6 +3346,8 @@ void Testbed::train_nerf_step(uint32_t target_batch_size, uint32_t n_rays_per_ba
 		m_nerf.training.cam_exposure_gpu.data(),
 		m_nerf.training.optimize_exposure ? m_nerf.training.cam_exposure_gradient_gpu.data() : nullptr,
 		m_nerf.training.depth_supervision_lambda,
+		m_nerf.training.densify_lambda,
+		m_nerf.training.densify_loss_type,
 		m_nerf.training.near_distance
 	);
 
