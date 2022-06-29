@@ -616,7 +616,7 @@ public:
 		std::shared_ptr<TrainableBuffer<4, 2, float>> envmap;
 		std::shared_ptr<tcnn::Trainer<float, float, float>> trainer;
 
-		Eigen::Vector2i resolution;
+		Eigen::Vector2i resolution = {0, 0};
 		ELossType loss_type;
 	} m_envmap;
 

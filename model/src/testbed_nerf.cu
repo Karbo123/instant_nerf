@@ -2552,7 +2552,7 @@ void Testbed::Nerf::Training::update_transforms(int first, int last) {
 }
 
 void Testbed::create_empty_nerf_dataset(size_t n_images, int aabb_scale, bool is_hdr) {
-	m_nerf.training.dataset = ngp::create_empty_nerf_dataset(n_images, aabb_scale, is_hdr);
+	m_nerf.training.dataset = ngp::create_empty_nerf_dataset(n_images, aabb_scale, is_hdr, m_nerf.training.train_envmap, m_envmap.resolution);
 	load_nerf();
 	m_nerf.training.n_images_for_training = 0;
 	m_training_data_available = true;
