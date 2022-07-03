@@ -1,12 +1,18 @@
-[submodule "third_party/instant-ngp"]
-    path = third_party/instant-ngp
-    url = git@github.com:NVlabs/instant-ngp.git
-[submodule "third_party/torch-ngp"]
-    path = third_party/torch-ngp
-    url = git@github.com:ashawkey/torch-ngp.git
-[submodule "third_party/JNeRF"]
-	path = third_party/JNeRF
-	url = git@github.com:Jittor/JNeRF.git
-[submodule "third_party/HashNeRF-pytorch"]
-	path = third_party/HashNeRF-pytorch
-	url = git@github.com:yashbhalgat/HashNeRF-pytorch.git
+[submodule "third_party/tiny-cuda-nn"]
+	path = third_party/tiny-cuda-nn
+	url = git@github.com:NVlabs/tiny-cuda-nn.git
+[submodule "third_party/eigen"]
+	path = third_party/eigen
+	url = git@github.com:Tom94/eigen.git
+[submodule "third_party/pybind11"]
+	path = third_party/pybind11
+	url = git@github.com:Tom94/pybind11.git
+[submodule "third_party/tinylogger"]
+	path = third_party/tinylogger
+	url = git@github.com:Tom94/tinylogger.git
+[submodule "third_party/imgui"]
+	path = third_party/imgui
+	url = git@github.com:ocornut/imgui.git
+[submodule "third_party/args"]
+	path = third_party/args
+	url = git@github.com:Taywee/args.git

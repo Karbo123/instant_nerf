@@ -1,2 +1,4 @@
-model/build
-model/dependencies
+build
+*.log
+*.so*
+**/__pycache__
